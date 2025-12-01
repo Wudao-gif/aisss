@@ -1,6 +1,6 @@
 """
-RAG ¼ìË÷Ä£¿é
-ÊµÏÖÏòÁ¿¼ìË÷ºÍÉÏÏÂÎÄ¹¹½¨£¬Ö§³Ö¶àÂÖ¶Ô»°¡¢²éÑ¯¸ÄĞ´¡¢ÖØÅÅĞòºÍ»ìºÏ¼ìË÷
+RAG æ£€ç´¢æ¨¡å—
+å®ç°å‘é‡æ£€ç´¢å’Œä¸Šä¸‹æ–‡æ„å»ºï¼Œæ”¯æŒå¤šè½®å¯¹è¯ã€æŸ¥è¯¢æ”¹å†™ã€é‡æ’åºå’Œæ··åˆæ£€ç´¢
 """
 
 import logging
@@ -16,59 +16,59 @@ from .conversation_memory import get_memory, ConversationMemory
 
 logger = logging.getLogger(__name__)
 
-# Context ×Ö·ûÊıÈÛ¶ÏãĞÖµ£¨·ÀÖ¹³¬¹ıÄ£ĞÍÉÏÏÂÎÄÏŞÖÆ£©
-CONTEXT_CHAR_LIMIT = 12000  # Ô¼ 3000-4000 tokens
+# Context å­—ç¬¦æ•°ç†”æ–­é˜ˆå€¼ï¼ˆé˜²æ­¢è¶…è¿‡æ¨¡å‹ä¸Šä¸‹æ–‡é™åˆ¶ï¼‰
+CONTEXT_CHAR_LIMIT = 12000  # çº¦ 3000-4000 tokens
 
-# Rerank ÅäÖÃ
-RERANK_ENABLED = True  # ÊÇ·ñÆôÓÃÖØÅÅĞò
-RERANK_TOP_N = 3  # ÖØÅÅĞòºó±£ÁôµÄÊıÁ¿
+# Rerank é…ç½®
+RERANK_ENABLED = True  # æ˜¯å¦å¯ç”¨é‡æ’åº
+RERANK_TOP_N = 3  # é‡æ’åºåä¿ç•™çš„æ•°é‡
 
-# »ìºÏ¼ìË÷ÅäÖÃ
-HYBRID_SEARCH_ENABLED = True  # ÊÇ·ñÆôÓÃ»ìºÏ¼ìË÷
-KEYWORD_BOOST_WEIGHT = 0.3  # ¹Ø¼ü´ÊÆ¥ÅäµÄÈ¨ÖØÌáÉı
+# æ··åˆæ£€ç´¢é…ç½®
+HYBRID_SEARCH_ENABLED = True  # æ˜¯å¦å¯ç”¨æ··åˆæ£€ç´¢
+KEYWORD_BOOST_WEIGHT = 0.3  # å…³é”®è¯åŒ¹é…çš„æƒé‡æå‡
 
 
 class RAGRetriever:
-    """RAG ¼ìË÷Æ÷"""
+    """RAG æ£€ç´¢å™¨"""
     
     def __init__(self):
-        """³õÊ¼»¯¼ìË÷Æ÷"""
+        """åˆå§‹åŒ–æ£€ç´¢å™¨"""
         self.embedding = OpenRouterEmbedding()
         self.vector_store = VectorStore()
         self.chat_model = settings.CHAT_MODEL
         self.memory = get_memory()
-        logger.info(f"RAG ¼ìË÷Æ÷³õÊ¼»¯Íê³É£¬Chat Model: {self.chat_model}")
+        logger.info(f"RAG æ£€ç´¢å™¨åˆå§‹åŒ–å®Œæˆï¼ŒChat Model: {self.chat_model}")
     
     async def rewrite_query(
         self,
         query: str,
         history: Optional[List[Dict[str, str]]] = None
     ) -> str:
-        """¸ù¾İÀúÊ·¶Ô»°¸ÄĞ´²éÑ¯£¬½â¾öÖ¸´ú²»ÇåÎÊÌâ"""
+        """æ ¹æ®å†å²å¯¹è¯æ”¹å†™æŸ¥è¯¢ï¼Œè§£å†³æŒ‡ä»£ä¸æ¸…é—®é¢˜"""
         if not history or len(history) == 0:
             return query
 
         recent_history = history[-6:] if len(history) > 6 else history
         history_text = "\n".join([
-            f"{'ÓÃ»§' if msg['role'] == 'user' else 'AI'}: {msg['content'][:200]}"
+            f"{'ç”¨æˆ·' if msg['role'] == 'user' else 'AI'}: {msg['content'][:200]}"
             for msg in recent_history
         ])
 
-        rewrite_prompt = f"""ÄãÊÇÒ»¸ö²éÑ¯¸ÄĞ´ÖúÊÖ¡£¸ù¾İ¶Ô»°ÀúÊ·£¬½«ÓÃ»§µÄµ±Ç°ÎÊÌâ¸ÄĞ´³ÉÒ»¸ö¶ÀÁ¢¡¢ÍêÕûµÄ²éÑ¯Óï¾ä¡£
+        rewrite_prompt = f"""ä½ æ˜¯ä¸€ä¸ªæŸ¥è¯¢æ”¹å†™åŠ©æ‰‹ã€‚æ ¹æ®å¯¹è¯å†å²ï¼Œå°†ç”¨æˆ·çš„å½“å‰é—®é¢˜æ”¹å†™æˆä¸€ä¸ªç‹¬ç«‹ã€å®Œæ•´çš„æŸ¥è¯¢è¯­å¥ã€‚
 
-¶Ô»°ÀúÊ·£º
+å¯¹è¯å†å²ï¼š
 {history_text}
 
-µ±Ç°ÎÊÌâ£º{query}
+å½“å‰é—®é¢˜ï¼š{query}
 
-¸ÄĞ´¹æÔò£º
-1. ½â¾ö´ú´ÊÖ¸´ú£¨Èç"Ëü"¡¢"Õâ¸ö"¡¢"ÄÇ¸ö"µÈ£©
-2. ²¹³äÊ¡ÂÔµÄÖ÷Óï»ò±öÓï
-3. ±£³ÖÔ­Òâ£¬²»ÒªÌí¼Ó¶îÍâĞÅÏ¢
-4. Èç¹ûµ±Ç°ÎÊÌâÒÑ¾­×ã¹»ÇåÎú£¬Ö±½Ó·µ»ØÔ­ÎÊÌâ
-5. Ö»·µ»Ø¸ÄĞ´ºóµÄÎÊÌâ£¬²»ÒªÓĞÈÎºÎ½âÊÍ
+æ”¹å†™è§„åˆ™ï¼š
+1. è§£å†³ä»£è¯æŒ‡ä»£ï¼ˆå¦‚"å®ƒ"ã€"è¿™ä¸ª"ã€"é‚£ä¸ª"ç­‰ï¼‰
+2. è¡¥å……çœç•¥çš„ä¸»è¯­æˆ–å®¾è¯­
+3. ä¿æŒåŸæ„ï¼Œä¸è¦æ·»åŠ é¢å¤–ä¿¡æ¯
+4. å¦‚æœå½“å‰é—®é¢˜å·²ç»è¶³å¤Ÿæ¸…æ™°ï¼Œç›´æ¥è¿”å›åŸé—®é¢˜
+5. åªè¿”å›æ”¹å†™åçš„é—®é¢˜ï¼Œä¸è¦æœ‰ä»»ä½•è§£é‡Š
 
-¸ÄĞ´ºóµÄÎÊÌâ£º"""
+æ”¹å†™åçš„é—®é¢˜ï¼š"""
 
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
@@ -88,31 +88,31 @@ class RAGRetriever:
                 response.raise_for_status()
                 data = response.json()
                 rewritten = data["choices"][0]["message"]["content"].strip().strip('"\'')
-                logger.info(f"²éÑ¯¸ÄĞ´: '{query}' -> '{rewritten}'")
+                logger.info(f"æŸ¥è¯¢æ”¹å†™: '{query}' -> '{rewritten}'")
                 return rewritten
         except Exception as e:
-            logger.warning(f"²éÑ¯¸ÄĞ´Ê§°Ü£¬Ê¹ÓÃÔ­²éÑ¯: {e}")
+            logger.warning(f"æŸ¥è¯¢æ”¹å†™å¤±è´¥ï¼Œä½¿ç”¨åŸæŸ¥è¯¢: {e}")
             return query
 
     def _extract_keywords(self, query: str) -> List[str]:
-        """´Ó²éÑ¯ÖĞÌáÈ¡¹Ø¼ü´Ê£¨ÓÃÓÚ»ìºÏ¼ìË÷£©"""
+        """ä»æŸ¥è¯¢ä¸­æå–å…³é”®è¯ï¼ˆç”¨äºæ··åˆæ£€ç´¢ï¼‰"""
         keywords = []
-        # ÌáÈ¡Ó¢ÎÄµ¥´ÊºÍÊı×Ö
+        # æå–è‹±æ–‡å•è¯å’Œæ•°å­—
         english_pattern = r'[A-Za-z][A-Za-z0-9_\-\.]*[A-Za-z0-9]|[A-Za-z]'
         english_matches = re.findall(english_pattern, query)
         keywords.extend([w for w in english_matches if len(w) >= 2])
-        # ÌáÈ¡Êı×Ö
+        # æå–æ•°å­—
         number_pattern = r'\d+\.?\d*'
         number_matches = re.findall(number_pattern, query)
         keywords.extend(number_matches)
-        # ÌáÈ¡ÖĞÎÄ´Ê×é
+        # æå–ä¸­æ–‡è¯ç»„
         chinese_pattern = r'[\u4e00-\u9fff]{2,4}'
         chinese_matches = re.findall(chinese_pattern, query)
         keywords.extend(chinese_matches)
         return list(set(keywords))
 
     def _keyword_match_score(self, text: str, keywords: List[str]) -> float:
-        """¼ÆËãÎÄ±¾Óë¹Ø¼ü´ÊµÄÆ¥Åä·ÖÊı"""
+        """è®¡ç®—æ–‡æœ¬ä¸å…³é”®è¯çš„åŒ¹é…åˆ†æ•°"""
         if not keywords:
             return 0.0
         text_lower = text.lower()
@@ -125,8 +125,8 @@ class RAGRetriever:
         top_k: int = 5,
         filter_expr: Optional[str] = None
     ) -> List[Dict[str, Any]]:
-        """¼ìË÷Ïà¹ØÎÄµµÆ¬¶Î£¨Ö§³Ö»ìºÏ¼ìË÷£©"""
-        logger.info(f"¿ªÊ¼¼ìË÷£¬query: {query[:50]}..., top_k: {top_k}")
+        """æ£€ç´¢ç›¸å…³æ–‡æ¡£ç‰‡æ®µï¼ˆæ”¯æŒæ··åˆæ£€ç´¢ï¼‰"""
+        logger.info(f"å¼€å§‹æ£€ç´¢ï¼Œquery: {query[:50]}..., top_k: {top_k}")
 
         query_embedding = self.embedding.get_text_embedding(query)
         search_top_k = top_k * 2 if RERANK_ENABLED else top_k
@@ -136,11 +136,11 @@ class RAGRetriever:
             filter_expr=filter_expr
         )
 
-        # »ìºÏ¼ìË÷£º¹Ø¼ü´ÊÆ¥Åä¼ÓÈ¨
+        # æ··åˆæ£€ç´¢ï¼šå…³é”®è¯åŒ¹é…åŠ æƒ
         if HYBRID_SEARCH_ENABLED and results:
             keywords = self._extract_keywords(query)
             if keywords:
-                logger.info(f"»ìºÏ¼ìË÷£ºÌáÈ¡¹Ø¼ü´Ê {keywords}")
+                logger.info(f"æ··åˆæ£€ç´¢ï¼šæå–å…³é”®è¯ {keywords}")
                 for result in results:
                     text = result.get("text", "")
                     keyword_score = self._keyword_match_score(text, keywords)
@@ -149,7 +149,7 @@ class RAGRetriever:
                     result["score"] = original_score + (keyword_score * KEYWORD_BOOST_WEIGHT)
                 results.sort(key=lambda x: x["score"], reverse=True)
 
-        logger.info(f"¼ìË÷Íê³É£¬ÕÒµ½ {len(results)} ¸öÏà¹ØÆ¬¶Î")
+        logger.info(f"æ£€ç´¢å®Œæˆï¼Œæ‰¾åˆ° {len(results)} ä¸ªç›¸å…³ç‰‡æ®µ")
         return results
 
     async def rerank(
@@ -158,7 +158,7 @@ class RAGRetriever:
         results: List[Dict[str, Any]],
         top_n: int = RERANK_TOP_N
     ) -> List[Dict[str, Any]]:
-        """Ê¹ÓÃ LLM ¶Ô¼ìË÷½á¹û½øĞĞÖØÅÅĞò"""
+        """ä½¿ç”¨ LLM å¯¹æ£€ç´¢ç»“æœè¿›è¡Œé‡æ’åº"""
         if not results or len(results) <= top_n:
             return results
         
@@ -169,17 +169,17 @@ class RAGRetriever:
         
         candidates_text = "\n\n".join(candidates)
         
-        rerank_prompt = f"""ÄãÊÇÒ»¸öÎÄµµÏà¹ØĞÔÆÀ¹À×¨¼Ò¡£Çë¸ù¾İÓÃ»§ÎÊÌâ£¬¶ÔÒÔÏÂºòÑ¡ÎÄµµÆ¬¶Î½øĞĞÏà¹ØĞÔÅÅĞò¡£
+        rerank_prompt = f"""ä½ æ˜¯ä¸€ä¸ªæ–‡æ¡£ç›¸å…³æ€§è¯„ä¼°ä¸“å®¶ã€‚è¯·æ ¹æ®ç”¨æˆ·é—®é¢˜ï¼Œå¯¹ä»¥ä¸‹å€™é€‰æ–‡æ¡£ç‰‡æ®µè¿›è¡Œç›¸å…³æ€§æ’åºã€‚
 
-ÓÃ»§ÎÊÌâ£º{query}
+ç”¨æˆ·é—®é¢˜ï¼š{query}
 
-ºòÑ¡ÎÄµµ£º
+å€™é€‰æ–‡æ¡£ï¼š
 {candidates_text}
 
-Çë°´Ïà¹ØĞÔ´Ó¸ßµ½µÍ£¬·µ»Ø×îÏà¹ØµÄ {top_n} ¸öÎÄµµµÄ±àºÅ¡£
-Ö»·µ»Ø±àºÅ£¬ÓÃ¶ººÅ·Ö¸ô£¬ÀıÈç£º3,1,5
+è¯·æŒ‰ç›¸å…³æ€§ä»é«˜åˆ°ä½ï¼Œè¿”å›æœ€ç›¸å…³çš„ {top_n} ä¸ªæ–‡æ¡£çš„ç¼–å·ã€‚
+åªè¿”å›ç¼–å·ï¼Œç”¨é€—å·åˆ†éš”ï¼Œä¾‹å¦‚ï¼š3,1,5
 
-×îÏà¹ØµÄÎÄµµ±àºÅ£º"""
+æœ€ç›¸å…³çš„æ–‡æ¡£ç¼–å·ï¼š"""
 
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
@@ -208,12 +208,12 @@ class RAGRetriever:
                 
                 if indices:
                     reranked = [results[i] for i in indices[:top_n]]
-                    logger.info(f"Rerank Íê³É£º{len(results)} -> {len(reranked)}")
+                    logger.info(f"Rerank å®Œæˆï¼š{len(results)} -> {len(reranked)}")
                     return reranked
                 else:
                     return results[:top_n]
         except Exception as e:
-            logger.warning(f"Rerank Ê§°Ü: {e}")
+            logger.warning(f"Rerank å¤±è´¥: {e}")
             return results[:top_n]
     
     def build_context(
@@ -221,7 +221,7 @@ class RAGRetriever:
         results: List[Dict[str, Any]],
         max_chars: int = CONTEXT_CHAR_LIMIT
     ) -> Tuple[str, List[Dict[str, Any]]]:
-        """¹¹½¨ÉÏÏÂÎÄ£¨´ø×Ö·ûÊıÈÛ¶ÏÆ÷ºÍÒıÓÃ±ê¼Ç£©"""
+        """æ„å»ºä¸Šä¸‹æ–‡ï¼ˆå¸¦å­—ç¬¦æ•°ç†”æ–­å™¨å’Œå¼•ç”¨æ ‡è®°ï¼‰"""
         if not results:
             return "", []
         
@@ -232,11 +232,11 @@ class RAGRetriever:
         for i, result in enumerate(results, 1):
             text = result.get("text", "")
             score = result.get("score", 0)
-            part = f"[À´Ô´{i}] (Ïà¹Ø¶È: {score:.3f})\n{text}"
+            part = f"[æ¥æº{i}] (ç›¸å…³åº¦: {score:.3f})\n{text}"
             part_len = len(part)
             
             if current_chars + part_len > max_chars:
-                logger.warning(f"Context ÈÛ¶Ï£ºµÚ {i} ¸öÆ¬¶Î³¬¹ıÏŞÖÆ")
+                logger.warning(f"Context ç†”æ–­ï¼šç¬¬ {i} ä¸ªç‰‡æ®µè¶…è¿‡é™åˆ¶")
                 break
             
             context_parts.append(part)
@@ -244,7 +244,7 @@ class RAGRetriever:
             current_chars += part_len + 10
         
         final_context = "\n\n---\n\n".join(context_parts)
-        logger.info(f"Context ¹¹½¨Íê³É£º{len(context_parts)} ¸öÆ¬¶Î")
+        logger.info(f"Context æ„å»ºå®Œæˆï¼š{len(context_parts)} ä¸ªç‰‡æ®µ")
         return final_context, used_results
     
     def _build_messages(
@@ -255,41 +255,64 @@ class RAGRetriever:
         history: Optional[List[Dict[str, str]]] = None,
         summary: Optional[str] = None
     ) -> list:
-        """¹¹½¨ÏûÏ¢ÁĞ±í£¬Ö§³Ö¶àÂÖ¶Ô»°¡¢ÕªÒª×¢ÈëºÍÒıÓÃËİÔ´"""
-        # ?????? ¹Ø¼üĞŞ¸Äµã£º¸³Óè AI ÏĞÁÄºÍ²éÔÄÀúÊ·µÄÈ¨Àû ??????
-        base_system_prompt = system_prompt or """ÄãÊÇÒ»Î»ÖªÊ¶Ô¨²©¡¢ÓÄÄ¬·çÈ¤µÄAIÖú½Ì¡£ÄãµÄÄ¿±êÊÇ°ïÖúÓÃ»§ÕæÕıÀí½âÖªÊ¶£¬¶ø²»½ö½öÊÇÕÕ±¾Ğû¿Æ¡£
+        """æ„å»ºæ¶ˆæ¯åˆ—è¡¨ï¼Œæ”¯æŒå¤šè½®å¯¹è¯ã€æ‘˜è¦æ³¨å…¥å’Œå¼•ç”¨æº¯æº"""
+        
+        # 1. åŠ¨æ€å†³å®š System Prompt
+        # å¦‚æœæ²¡æœ‰å‚è€ƒèµ„æ–™ï¼Œå°±æŠŠå®ƒå˜æˆä¸€ä¸ªçº¯èŠå¤©åŠ©æ‰‹ï¼Œä¸è¦ç»™å®ƒ"å¼•ç”¨"çš„å‹åŠ›
+        if not context or not context.strip():
+            base_system_prompt = """ä½ æ˜¯ä¸€ä¸ªçŸ¥è¯†æ¸Šåšã€å¹½é»˜é£è¶£çš„ AI ä¼™ä¼´ã€‚
+ä½ çš„ç›®æ ‡æ˜¯ä¸ç”¨æˆ·è¿›è¡Œè‡ªç„¶ã€æµç•…çš„å¯¹è¯ã€‚
 
-¡¾ºËĞÄÔ­Ôò¡¿£º
-1. **ÓÅÏÈÊ¹ÓÃ²Î¿¼×ÊÁÏ**£º»Ø´ğÖªÊ¶ĞÔÎÊÌâÊ±£¬±ØĞë»ùÓÚÌá¹©µÄ²Î¿¼×ÊÁÏ£¬²¢±ê×¢[À´Ô´X]¡£
-2. **ÔÊĞíÊ¹ÓÃ¶Ô»°ÀúÊ·**£ºÈç¹ûÓÃ»§ÎÊµÄÊÇ¹ØÓÚ**Ö®Ç°ÁÄ¹ıµÄÄÚÈİ**£¨Èç"ÎÒ¸Õ²ÅËµÁËÊ²Ã´"£©£¬ÇëÖ±½Ó¸ù¾İ¶Ô»°ÀúÊ·»Ø´ğ£¬**²»ĞèÒª**²Î¿¼×ÊÁÏ¡£
-3. **ÔÊĞíÏĞÁÄ**£ºÈç¹ûÓÃ»§½øĞĞÎÊºò»òÏĞÁÄ£¬ÇëÓÃÇáËÉ×ÔÈ»µÄÓïÆø»ØÓ¦£¬**²»ĞèÒª**²Î¿¼×ÊÁÏ¡£
-4. **³ÏÊµÔ­Ôò**£ºÈç¹û²Î¿¼×ÊÁÏÀïÃ»ÓĞ£¬ÇÒÎÊÌâÒ²²»ÊôÓÚÏĞÁÄ»òÀúÊ·»Ø¹Ë£¬ÔÙ³ÏÊµµØËµ"×ÊÁÏÀïÎ´ÕÒµ½"¡£
+ã€ä½ çš„è¡Œä¸ºå‡†åˆ™ã€‘ï¼š
+1. **åƒçœŸäººä¸€æ ·èŠå¤©**ï¼šå¦‚æœç”¨æˆ·è·Ÿä½ æ‰“æ‹›å‘¼ã€è‡ªæˆ‘ä»‹ç»æˆ–é—²èŠï¼Œè¯·çƒ­æƒ…å›åº”ï¼Œä¸è¦åœ¨é‚£å„¿ä¸€æœ¬æ­£ç»åœ°æ‰¾èµ„æ–™ã€‚
+2. **å…³æ³¨å¯¹è¯å†å²**ï¼šæ—¶åˆ»å…³æ³¨ä¸Šé¢çš„[å¯¹è¯å†å²]ï¼Œå¦‚æœç”¨æˆ·åœ¨å›é¡¾ä¹‹å‰çš„å¯¹è¯ï¼Œè¯·å‡†ç¡®å›ç­”ã€‚
+3. **è‡ªä¿¡å›ç­”**ï¼šæ—¢ç„¶ç°åœ¨æ²¡æœ‰å‚è€ƒèµ„æ–™æŸç¼šä½ ï¼Œä½ å¯ä»¥åˆ©ç”¨ä½ è‡ªå·±çš„é€šç”¨çŸ¥è¯†æ¥å›ç­”ç”¨æˆ·çš„é—®é¢˜ï¼ˆæ¯”å¦‚å…³äºè‹±è¯­å­¦ä¹ å»ºè®®ã€å¸¸è¯†ç­‰ï¼‰ã€‚
+4. **æ‹’ç»æœºæ¢°å›å¤**ï¼šç»å¯¹ä¸è¦è¯´"å‚è€ƒèµ„æ–™é‡Œæ²¡æœ‰"ï¼Œå› ä¸ºç°åœ¨æ ¹æœ¬å°±æ²¡æœ‰å‚è€ƒèµ„æ–™ï¼"""
+        else:
+            # å¦‚æœæœ‰å‚è€ƒèµ„æ–™ï¼Œå†å¯ç”¨"ä¸¥è°¨æ¨¡å¼"
+            base_system_prompt = system_prompt or """ä½ æ˜¯ä¸€ä¸ªä¸“ä¸šçš„ AI åŠ©æ•™ã€‚
+ã€é‡è¦ã€‘ï¼šä½ æ‹¥æœ‰ä»¥ä¸‹å‚è€ƒèµ„æ–™ã€‚è¯·ä¸»è¦åŸºäºå‚è€ƒèµ„æ–™å›ç­”ç”¨æˆ·çš„é—®é¢˜ã€‚
 
-¡¾»Ø´ğ·ç¸ñ¡¿£º
-- Í¨Ë×Ò×¶®£¬¶àÓÃ±ÈÓ÷¡£
-- Ïñ¸öÕæÈËÒ»Ñù½»Á÷£¬²»Òª×ÜÊÇ°Ñ"²Î¿¼×ÊÁÏ"¹ÒÔÚ×ì±ß¡£
+ã€è¡Œä¸ºå‡†åˆ™ã€‘ï¼š
+1. **ä¼˜å…ˆå¼•ç”¨**ï¼šå›ç­”çŸ¥è¯†ç‚¹æ—¶ï¼Œè¯·æ ‡æ³¨[æ¥æºX]ã€‚
+2. **çµæ´»å˜é€š**ï¼šå¦‚æœèµ„æ–™é‡Œæ²¡æåˆ°ï¼Œä½†ä½ èƒ½ä»å¸¸è¯†åˆ¤æ–­ï¼Œå¯ä»¥è¡¥å……è¯´æ˜ã€‚
+3. **å…è®¸é—²èŠ**ï¼šå¦‚æœç”¨æˆ·åªæ˜¯æƒ³èŠå¤©ï¼Œè¯·å¿½ç•¥å‚è€ƒèµ„æ–™ï¼Œç›´æ¥å›åº”ã€‚
 """
 
+        # 2. æ³¨å…¥æ‘˜è¦ï¼ˆé•¿æœŸè®°å¿†ï¼‰
         if summary:
-            full_system_prompt = f"{base_system_prompt}\n\n[Ö®Ç°µÄ¶Ô»°ÕªÒª]\n{summary}\n[ÕªÒª½áÊø]"
+            full_system_prompt = f"{base_system_prompt}
+
+[ä¹‹å‰çš„å¯¹è¯æ‘˜è¦ï¼ˆè¿™æ˜¯ç”¨æˆ·çš„é‡è¦èƒŒæ™¯ï¼Œè¯·è®°ä½ï¼‰]
+{summary}
+[æ‘˜è¦ç»“æŸ]"
         else:
             full_system_prompt = base_system_prompt
 
         messages = [{"role": "system", "content": full_system_prompt}]
 
+        # 3. æ³¨å…¥çŸ­æœŸå†å²
         if history:
             for msg in history:
                 messages.append({"role": msg["role"], "content": msg["content"]})
 
-        # ?????? ¹Ø¼üĞŞ¸Äµã£ºÒÆ³ıÕâÀïµÄÇ¿ÖÆÖ¸Áî£¬Ö»ÁôÄÚÈİ ??????
-        messages.append({
-            "role": "user",
-            "content": f"""²Î¿¼×ÊÁÏ£¨ÇëÔÚ»Ø´ğÖĞÊ¹ÓÃ[À´Ô´X]±ê×¢ÒıÓÃ£©£º
+        # 4. ã€æœ€å…³é”®ä¿®æ”¹ã€‘åŠ¨æ€æ„å»ºç”¨æˆ·æ¶ˆæ¯
+        # å¦‚æœæ²¡æœ‰ contextï¼Œå°±ä¸è¦å‘"å‚è€ƒèµ„æ–™"è¿™å‡ ä¸ªå­—ï¼Œé˜²æ­¢ AI çŠ¯å‚»
+        if context and context.strip():
+            final_user_content = f"""### å‚è€ƒèµ„æ–™ï¼ˆè¯·åœ¨å›ç­”ä¸­å¼•ç”¨ï¼‰ï¼š
 {context}
 
 ---
 
-ÓÃ»§ÎÊÌâ£º{query}"""
+### ç”¨æˆ·é—®é¢˜ï¼š
+{query}"""
+        else:
+            # æ²¡èµ„æ–™æ—¶ï¼Œå°±æ˜¯çº¯èŠå¤©ï¼
+            final_user_content = query
+
+        messages.append({
+            "role": "user",
+            "content": final_user_content
         })
 
         return messages
@@ -302,9 +325,9 @@ class RAGRetriever:
         history: Optional[List[Dict[str, str]]] = None,
         summary: Optional[str] = None
     ) -> str:
-        """»ùÓÚÉÏÏÂÎÄÉú³É»Ø´ğ£¨·ÇÁ÷Ê½£©"""
+        """åŸºäºä¸Šä¸‹æ–‡ç”Ÿæˆå›ç­”ï¼ˆéæµå¼ï¼‰"""
         messages = self._build_messages(query, context, system_prompt, history, summary)
-        logger.info(f"¿ªÊ¼Éú³É»Ø´ğ£¬Ä£ĞÍ: {self.chat_model}")
+        logger.info(f"å¼€å§‹ç”Ÿæˆå›ç­”ï¼Œæ¨¡å‹: {self.chat_model}")
 
         async with httpx.AsyncClient(timeout=120.0) as client:
             response = await client.post(
@@ -325,7 +348,7 @@ class RAGRetriever:
             response.raise_for_status()
             data = response.json()
             answer = data["choices"][0]["message"]["content"]
-            logger.info(f"»Ø´ğÉú³ÉÍê³É£¬³¤¶È: {len(answer)}")
+            logger.info(f"å›ç­”ç”Ÿæˆå®Œæˆï¼Œé•¿åº¦: {len(answer)}")
             return answer
 
     async def generate_answer_stream(
@@ -336,13 +359,13 @@ class RAGRetriever:
         history: Optional[List[Dict[str, str]]] = None,
         summary: Optional[str] = None
     ):
-        """»ùÓÚÉÏÏÂÎÄÉú³É»Ø´ğ£¨Á÷Ê½£©"""
+        """åŸºäºä¸Šä¸‹æ–‡ç”Ÿæˆå›ç­”ï¼ˆæµå¼ï¼‰"""
         messages = self._build_messages(query, context, system_prompt, history, summary)
-        # µ÷ÊÔÈÕÖ¾£ºÈ·ÈÏÒıÓÃ¹æÔòÊÇ·ñÉúĞ§
+        # è°ƒè¯•æ—¥å¿—ï¼šç¡®è®¤å¼•ç”¨è§„åˆ™æ˜¯å¦ç”Ÿæ•ˆ
         if messages and messages[0].get("role") == "system":
             sys_content = messages[0].get("content", "")
-            has_citation_rule = "[À´Ô´" in sys_content or "À´Ô´X" in sys_content
-            logger.info(f"¿ªÊ¼Á÷Ê½Éú³É»Ø´ğ£¬Ä£ĞÍ: {self.chat_model}, ÒıÓÃ¹æÔò: {'?' if has_citation_rule else '?'}")
+            has_citation_rule = "[æ¥æº" in sys_content or "æ¥æºX" in sys_content
+            logger.info(f"å¼€å§‹æµå¼ç”Ÿæˆå›ç­”ï¼Œæ¨¡å‹: {self.chat_model}, å¼•ç”¨è§„åˆ™: {'?' if has_citation_rule else '?'}")
 
         async with httpx.AsyncClient(timeout=120.0) as client:
             async with client.stream(
@@ -382,9 +405,9 @@ class RAGRetriever:
         answer: str,
         sources: List[Dict[str, Any]]
     ) -> List[Dict[str, Any]]:
-        """´Ó»Ø´ğÖĞÌáÈ¡ÒıÓÃĞÅÏ¢"""
+        """ä»å›ç­”ä¸­æå–å¼•ç”¨ä¿¡æ¯"""
         citations = []
-        citation_pattern = r'\[À´Ô´(\d+)\]'
+        citation_pattern = r'\[æ¥æº(\d+)\]'
         matches = re.findall(citation_pattern, answer)
         
         seen_ids = set()
@@ -413,9 +436,9 @@ class RAGRetriever:
         enable_rerank: bool = RERANK_ENABLED
     ) -> Dict[str, Any]:
         """
-        ÍêÕûµÄ RAG ²éÑ¯Á÷³Ì£¨Ö§³Ö¶àÂÖ¶Ô»°¡¢³¤ÆÚ¼ÇÒä¡¢ÖØÅÅĞòºÍÒıÓÃËİÔ´£©
+        å®Œæ•´çš„ RAG æŸ¥è¯¢æµç¨‹ï¼ˆæ”¯æŒå¤šè½®å¯¹è¯ã€é•¿æœŸè®°å¿†ã€é‡æ’åºå’Œå¼•ç”¨æº¯æºï¼‰
         """
-        # ¼ÇÒäÄ£¿é´¦Àí
+        # è®°å¿†æ¨¡å—å¤„ç†
         compressed_history = history or []
         summary = None
         
@@ -424,39 +447,39 @@ class RAGRetriever:
                 compressed_history, summary = await self.memory.check_and_compress(
                     user_id=user_id, book_id=book_id, history=history
                 )
-                logger.info(f"¼ÇÒä´¦Àí£º{len(history)} -> {len(compressed_history)} Ìõ")
+                logger.info(f"è®°å¿†å¤„ç†ï¼š{len(history)} -> {len(compressed_history)} æ¡")
             except Exception as e:
-                logger.error(f"¼ÇÒä´¦ÀíÊ§°Ü: {e}")
+                logger.error(f"è®°å¿†å¤„ç†å¤±è´¥: {e}")
                 compressed_history = history
         elif user_id and book_id:
             try:
                 summary = await self.memory.get_summary(user_id, book_id)
             except Exception as e:
-                logger.warning(f"»ñÈ¡ÕªÒªÊ§°Ü: {e}")
+                logger.warning(f"è·å–æ‘˜è¦å¤±è´¥: {e}")
 
-        # 1. ²éÑ¯¸ÄĞ´
+        # 1. æŸ¥è¯¢æ”¹å†™
         rewritten_query = await self.rewrite_query(question, compressed_history)
 
-        # 2. ¼ìË÷£¨°üº¬»ìºÏ¼ìË÷£©
+        # 2. æ£€ç´¢ï¼ˆåŒ…å«æ··åˆæ£€ç´¢ï¼‰
         results = self.retrieve(rewritten_query, top_k, filter_expr)
 
-        # ?? ¡¾ĞŞ¸Äµã¡¿É¾³ıÁË if not results µÄÀ¹½Ø¿é
-        # ¼´Ê¹ results Îª¿Õ£¬Ò²Òª¼ÌĞøÍùÏÂÖ´ĞĞ£¬½øÈë LLM Éú³É»·½Ú
+        # ?? ã€ä¿®æ”¹ç‚¹ã€‘åˆ é™¤äº† if not results çš„æ‹¦æˆªå—
+        # å³ä½¿ results ä¸ºç©ºï¼Œä¹Ÿè¦ç»§ç»­å¾€ä¸‹æ‰§è¡Œï¼Œè¿›å…¥ LLM ç”Ÿæˆç¯èŠ‚
 
-        # 3. ÖØÅÅĞò£¨¿ÉÑ¡£©
-        if enable_rerank and RERANK_ENABLED and results:  # ×¢Òâ£º¼ÓÁË results ´æÔÚµÄÅĞ¶Ï·ÀÖ¹±¨´í
+        # 3. é‡æ’åºï¼ˆå¯é€‰ï¼‰
+        if enable_rerank and RERANK_ENABLED and results:  # æ³¨æ„ï¼šåŠ äº† results å­˜åœ¨çš„åˆ¤æ–­é˜²æ­¢æŠ¥é”™
             results = await self.rerank(rewritten_query, results, top_n=top_k)
 
-        # 4. ¹¹½¨ÉÏÏÂÎÄ£¨´øÒıÓÃ±ê¼Ç£©
+        # 4. æ„å»ºä¸Šä¸‹æ–‡ï¼ˆå¸¦å¼•ç”¨æ ‡è®°ï¼‰
         context, used_sources = self.build_context(results)
 
-        # 5. Éú³É»Ø´ğ£¨´øÒıÓÃËİÔ´£©
-        # ?? ×îÖÕĞŞÕı£ºÇ¿ÖÆ system_prompt=None£¬È·±£ÄÚÖÃÒıÓÃ¹æÔòÉúĞ§
+        # 5. ç”Ÿæˆå›ç­”ï¼ˆå¸¦å¼•ç”¨æº¯æºï¼‰
+        # ?? æœ€ç»ˆä¿®æ­£ï¼šå¼ºåˆ¶ system_prompt=Noneï¼Œç¡®ä¿å†…ç½®å¼•ç”¨è§„åˆ™ç”Ÿæ•ˆ
         answer = await self.generate_answer(
-            question, context, None, compressed_history, summary  # ¡û Ç¿ÖÆ None
+            question, context, None, compressed_history, summary  # â† å¼ºåˆ¶ None
         )
 
-        # 6. ÌáÈ¡»Ø´ğÖĞµÄÒıÓÃ
+        # 6. æå–å›ç­”ä¸­çš„å¼•ç”¨
         citations = self._extract_citations(answer, used_sources)
 
         return {
