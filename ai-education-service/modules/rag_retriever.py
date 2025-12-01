@@ -458,8 +458,9 @@ class RAGRetriever:
         context, used_sources = self.build_context(results)
 
         # 5. 生成回答（带引用溯源）
+        # 🔧 最终修正：强制 system_prompt=None，确保内置引用规则生效
         answer = await self.generate_answer(
-            question, context, system_prompt, compressed_history, summary
+            question, context, None, compressed_history, summary  # ← 强制 None
         )
 
         # 6. 提取回答中的引用

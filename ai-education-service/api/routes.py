@@ -240,12 +240,15 @@ async def chat(
         if request.history:
             history = [{"role": msg.role, "content": msg.content} for msg in request.history]
 
+        # 🔧 最终修正：强制 system_prompt=None，确保引用规则不被覆盖
         result = await retriever.query(
             question=request.question,
             top_k=request.top_k,
             filter_expr=request.filter_expr,
-            system_prompt=request.system_prompt,
-            history=history
+            system_prompt=None,  # ← 强制为 None！禁止覆盖引用规则
+            history=history,
+            user_id=request.user_id,
+            book_id=request.book_id
         )
 
         # 转换来源为响应格式
