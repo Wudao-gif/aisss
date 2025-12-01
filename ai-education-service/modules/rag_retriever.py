@@ -442,16 +442,11 @@ class RAGRetriever:
         # 2. 检索（包含混合检索）
         results = self.retrieve(rewritten_query, top_k, filter_expr)
 
-        if not results:
-            return {
-                "answer": "抱歉，没有找到相关的参考资料来回答您的问题。",
-                "sources": [],
-                "citations": [],
-                "has_context": False
-            }
+        # 🚨 【修改点】删除了 if not results 的拦截块
+        # 即使 results 为空，也要继续往下执行，进入 LLM 生成环节
 
         # 3. 重排序（可选）
-        if enable_rerank and RERANK_ENABLED:
+        if enable_rerank and RERANK_ENABLED and results:  # 注意：加了 results 存在的判断防止报错
             results = await self.rerank(rewritten_query, results, top_n=top_k)
 
         # 4. 构建上下文（带引用标记）

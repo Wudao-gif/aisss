@@ -354,24 +354,17 @@ async def chat_stream(
             # 先发送 sources
             yield f"event: sources\ndata: {json.dumps({'sources': sources, 'has_context': has_context}, ensure_ascii=False)}\n\n"
 
-            if not has_context:
-                # 没有上下文，直接返回提示
-                yield f"event: content\ndata: {json.dumps({'content': '抱歉，没有找到相关的参考资料来回答您的问题。'}, ensure_ascii=False)}\n\n"
-            else:
-                # 🔧 最终修正：确保引用规则永远不会被覆盖
-                # ⚠️ 强制 system_prompt=None，让 retriever 使用内置的引用规则
-                # ⚠️ summary 作为独立参数传递，由 retriever._build_messages() 负责融合
-                # 这样可以确保：
-                #   功能 A (长期记忆): summary 被正确注入到 prompt 中
-                #   功能 B (引用溯源): [来源X] 规则不会被覆盖
-                async for chunk in retriever.generate_answer_stream(
-                    query=request.question,
-                    context=context,
-                    system_prompt=None,  # ← 强制为 None！禁止 API 层覆盖引用规则
-                    history=compressed_history,
-                    summary=summary  # ← 独立传递，由 retriever 融合到 prompt
-                ):
-                    yield f"event: content\ndata: {json.dumps({'content': chunk}, ensure_ascii=False)}\n\n"
+            # 🚨 【修改点】移除 "if not has_context" 的拦截判断
+            # 无论是否有上下文，都调用 generate_answer_stream
+            # 让 LLM 自己根据 System Prompt 决定：是回答"不知道"，还是根据"历史对话"回答
+            async for chunk in retriever.generate_answer_stream(
+                query=request.question,
+                context=context,     # 即使是空字符串也没关系
+                system_prompt=None,  # ← 强制为 None！禁止 API 层覆盖引用规则
+                history=compressed_history,
+                summary=summary      # ← 独立传递，由 retriever 融合到 prompt
+            ):
+                yield f"event: content\ndata: {json.dumps({'content': chunk}, ensure_ascii=False)}\n\n"
 
             # 发送完成标记
             yield f"event: done\ndata: {json.dumps({'done': True})}\n\n"
