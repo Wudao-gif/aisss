@@ -314,50 +314,23 @@ async def chat_stream(
 
         # 1. 检查并压缩对话历史（懒惰模式）
         compressed_history, summary = await memory.check_and_compress(user_id, book_id, history)
-
-        # 2. 构建增强的系统提示词（注入摘要 + 引用规则）
-        # 🔧 关键修复：必须包含引用规则，否则 AI 不会输出 [来源X] 标记
-        citation_rules = """【重要】引用规则：
-1. 回答时必须标注信息来源，使用格式：[来源X]
-2. 如果答案综合了多个来源，请分别标注
-3. 如果参考资料中没有相关信息，请诚实说明"参考资料中未找到相关信息"
-4. 不要编造参考资料中没有的内容
-
-回答要求：
-- 准确、简洁、有条理
-- 在多轮对话中保持上下文连贯性
-- 优先使用参考资料中的原文表述"""
-
-        base_prompt = request.system_prompt or "你是一个专业的教育资料助手。请根据提供的参考资料回答用户的问题。"
-
         if summary:
-            enhanced_system_prompt = f"""{base_prompt}
+            logger.info(f"已获取对话摘要，长度: {len(summary)}")
 
-{citation_rules}
-
-[对话背景摘要]
-{summary}
-[摘要结束]"""
-            logger.info(f"已注入对话摘要，长度: {len(summary)}")
-        else:
-            enhanced_system_prompt = f"""{base_prompt}
-
-{citation_rules}"""
-
-        # 3. 查询改写（结合摘要上下文）
+        # 2. 查询改写（结合摘要上下文）
         rewrite_context = compressed_history.copy()
         if summary:
             rewrite_context.insert(0, {"role": "system", "content": f"[之前的对话摘要]: {summary}"})
         rewritten_query = await retriever.rewrite_query(request.question, rewrite_context)
 
-        # 4. 使用改写后的查询检索相关文档
+        # 3. 使用改写后的查询检索相关文档
         results = retriever.retrieve(
             query=rewritten_query,
             top_k=request.top_k,
             filter_expr=request.filter_expr  # 保留 book_id 过滤，确保不跑题
         )
 
-        # 5. 构建上下文（带引用标记 [来源X]）
+        # 4. 构建上下文（带引用标记 [来源X]）
         # build_context 返回 (context_str, used_results)
         context, used_results = retriever.build_context(results)
         has_context = len(used_results) > 0
@@ -382,12 +355,14 @@ async def chat_stream(
                 # 没有上下文，直接返回提示
                 yield f"event: content\ndata: {json.dumps({'content': '抱歉，没有找到相关的参考资料来回答您的问题。'}, ensure_ascii=False)}\n\n"
             else:
-                # 流式生成回答（传入压缩后的历史对话）
+                # 🔧 关键修复：不传 system_prompt，让 retriever 使用内置的引用规则
+                # 把 summary 直接传给 retriever，由它负责注入到 prompt 中
                 async for chunk in retriever.generate_answer_stream(
-                    query=request.question,  # 使用原始问题
+                    query=request.question,
                     context=context,
-                    system_prompt=enhanced_system_prompt,  # 使用增强的系统提示词
-                    history=compressed_history  # 传入压缩后的历史
+                    system_prompt=None,  # ← 不覆盖！让 retriever 使用默认引用规则
+                    history=compressed_history,
+                    summary=summary  # ← 直接传递摘要给 retriever
                 ):
                     yield f"event: content\ndata: {json.dumps({'content': chunk}, ensure_ascii=False)}\n\n"
 
