@@ -340,7 +340,11 @@ class RAGRetriever:
     ):
         """基于上下文生成回答（流式）"""
         messages = self._build_messages(query, context, system_prompt, history, summary)
-        logger.info(f"开始流式生成回答，模型: {self.chat_model}")
+        # 调试日志：确认引用规则是否生效
+        if messages and messages[0].get("role") == "system":
+            sys_content = messages[0].get("content", "")
+            has_citation_rule = "[来源" in sys_content or "来源X" in sys_content
+            logger.info(f"开始流式生成回答，模型: {self.chat_model}, 引用规则: {'✅' if has_citation_rule else '❌'}")
 
         async with httpx.AsyncClient(timeout=120.0) as client:
             async with client.stream(
