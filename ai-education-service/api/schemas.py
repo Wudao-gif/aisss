@@ -3,7 +3,7 @@ API 请求/响应模型
 使用 Pydantic 定义数据结构
 """
 
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from pydantic import BaseModel, Field
 
 
