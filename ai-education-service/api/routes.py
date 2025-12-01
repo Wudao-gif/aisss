@@ -355,14 +355,15 @@ async def chat_stream(
                 # 没有上下文，直接返回提示
                 yield f"event: content\ndata: {json.dumps({'content': '抱歉，没有找到相关的参考资料来回答您的问题。'}, ensure_ascii=False)}\n\n"
             else:
-                # 🔧 关键修复：不传 system_prompt，让 retriever 使用内置的引用规则
-                # 把 summary 直接传给 retriever，由它负责注入到 prompt 中
+                # 🔧 关键修复：
+                # 1. system_prompt 使用前端传来的值（通常为 None），让 retriever 使用内置引用规则
+                # 2. summary 作为独立参数传递，由 retriever 负责融合到 prompt 中
                 async for chunk in retriever.generate_answer_stream(
                     query=request.question,
                     context=context,
-                    system_prompt=None,  # ← 不覆盖！让 retriever 使用默认引用规则
+                    system_prompt=request.system_prompt,  # ← 前端传来的（通常为 None）
                     history=compressed_history,
-                    summary=summary  # ← 直接传递摘要给 retriever
+                    summary=summary  # ← 独立传递，由 retriever 融合
                 ):
                     yield f"event: content\ndata: {json.dumps({'content': chunk}, ensure_ascii=False)}\n\n"
 
