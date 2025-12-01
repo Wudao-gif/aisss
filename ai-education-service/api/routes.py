@@ -315,15 +315,34 @@ async def chat_stream(
         # 1. 检查并压缩对话历史（懒惰模式）
         compressed_history, summary = await memory.check_and_compress(user_id, book_id, history)
 
-        # 2. 构建增强的系统提示词（注入摘要）
-        enhanced_system_prompt = request.system_prompt or ""
-        if summary:
-            enhanced_system_prompt = f"""[对话背景摘要]
-{summary}
+        # 2. 构建增强的系统提示词（注入摘要 + 引用规则）
+        # 🔧 关键修复：必须包含引用规则，否则 AI 不会输出 [来源X] 标记
+        citation_rules = """【重要】引用规则：
+1. 回答时必须标注信息来源，使用格式：[来源X]
+2. 如果答案综合了多个来源，请分别标注
+3. 如果参考资料中没有相关信息，请诚实说明"参考资料中未找到相关信息"
+4. 不要编造参考资料中没有的内容
 
----
-{enhanced_system_prompt}"""
+回答要求：
+- 准确、简洁、有条理
+- 在多轮对话中保持上下文连贯性
+- 优先使用参考资料中的原文表述"""
+
+        base_prompt = request.system_prompt or "你是一个专业的教育资料助手。请根据提供的参考资料回答用户的问题。"
+
+        if summary:
+            enhanced_system_prompt = f"""{base_prompt}
+
+{citation_rules}
+
+[对话背景摘要]
+{summary}
+[摘要结束]"""
             logger.info(f"已注入对话摘要，长度: {len(summary)}")
+        else:
+            enhanced_system_prompt = f"""{base_prompt}
+
+{citation_rules}"""
 
         # 3. 查询改写（结合摘要上下文）
         rewrite_context = compressed_history.copy()
