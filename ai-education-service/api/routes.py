@@ -338,19 +338,21 @@ async def chat_stream(
             filter_expr=request.filter_expr  # 保留 book_id 过滤，确保不跑题
         )
 
-        # 5. 构建上下文
-        context = retriever.build_context(results)
-        has_context = len(results) > 0
+        # 5. 构建上下文（带引用标记 [来源X]）
+        # build_context 返回 (context_str, used_results)
+        context, used_results = retriever.build_context(results)
+        has_context = len(used_results) > 0
 
-        # 转换来源为响应格式
+        # 转换来源为响应格式（使用 used_results，包含 citation_id）
         sources = [
             {
                 "id": r["id"],
                 "text": r["text"],
                 "score": r["score"],
-                "metadata": r.get("metadata")
+                "metadata": r.get("metadata"),
+                "citation_id": r.get("citation_id", i + 1)  # 引用编号
             }
-            for r in results
+            for i, r in enumerate(used_results)
         ]
 
         async def generate():
