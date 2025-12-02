@@ -1,5 +1,5 @@
 # AI 教育资料处理服务 Dockerfile
-FROM python:3.11-slim
+FROM python:3.11
 
 # 设置工作目录
 WORKDIR /app
@@ -7,11 +7,6 @@ WORKDIR /app
 # 设置环境变量
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
-
-# 安装系统依赖
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    && rm -rf /var/lib/apt/lists/*
 
 # 配置 pip 使用阿里云镜像源
 RUN pip config set global.index-url https://mirrors.aliyun.com/pypi/simple/ && \

@@ -3,13 +3,12 @@ version: '3.8'
 services:
   ai-education-service:
     build: .
-    container_name: ai-education-service
+    container_name: ai-education-service-dev
     ports:
       - "8000:8000"
     env_file:
       - .env
     volumes:
-      - ./temp:/app/temp
-      - .:/app  # 挂载整个代码目录，修改代码无需重构
-    restart: unless-stopped
-    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload  # 热重载
+      - .:/app
+      - /app/__pycache__
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
