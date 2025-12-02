@@ -32,7 +32,11 @@ async def lifespan(app: FastAPI):
     logger.info(f"🚀 {settings.APP_NAME} v{settings.APP_VERSION} 启动中...")
     logger.info(f"📦 OSS Bucket: {settings.OSS_BUCKET}")
     logger.info(f"🔗 DashVector Collection: {settings.DASHVECTOR_COLLECTION}")
-    logger.info(f"🤖 Embedding Model: {settings.EMBEDDING_MODEL}")
+    # 根据提供商显示正确的嵌入模型
+    if settings.EMBEDDING_PROVIDER.lower() == "dashscope":
+        logger.info(f"🤖 Embedding: DashScope/{settings.DASHSCOPE_EMBEDDING_MODEL} (维度: {settings.EMBEDDING_DIMENSION})")
+    else:
+        logger.info(f"🤖 Embedding: OpenRouter/{settings.EMBEDDING_MODEL} (维度: {settings.EMBEDDING_DIMENSION})")
     
     yield
     

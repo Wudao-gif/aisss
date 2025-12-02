@@ -34,9 +34,15 @@ class Settings(BaseSettings):
     OPENROUTER_SITE_NAME: Optional[str] = None  # 可选，用于排名
     
     # Embedding模型配置
-    EMBEDDING_MODEL: str = "openai/text-embedding-3-small"
+    EMBEDDING_PROVIDER: str = "openrouter"  # 可选: "openrouter" 或 "dashscope"
+    EMBEDDING_MODEL: str = "openai/text-embedding-3-small"  # OpenRouter 模型
     EMBEDDING_DIMENSION: int = 1024  # DashVector Collection Ooo11 配置的维度
     EMBEDDING_BATCH_SIZE: int = 10  # 批次大小
+
+    # DashScope Embedding 配置 (用于 qwen2.5-vl-embedding 等阿里云模型)
+    DASHSCOPE_API_KEY: Optional[str] = None
+    DASHSCOPE_EMBEDDING_MODEL: str = "qwen2.5-vl-embedding"  # 阿里云嵌入模型
+    DASHSCOPE_BASE_URL: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
     # Chat模型配置（用于RAG问答）
     CHAT_MODEL: str = "openai/gpt-4o-mini"  # 默认使用 GPT-4o-mini，性价比高

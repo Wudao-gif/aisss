@@ -1,4 +1,4 @@
-"""
+﻿"""
 RAG 检索模块
 实现向量检索和上下文构建，支持多轮对话、查询改写、重排序和混合检索
 """
@@ -11,7 +11,7 @@ import httpx
 
 from config import settings
 from .vector_store import VectorStore
-from .document_processor import OpenRouterEmbedding
+from .document_processor import get_embedding_model
 from .conversation_memory import get_memory, ConversationMemory
 
 logger = logging.getLogger(__name__)
@@ -33,7 +33,7 @@ class RAGRetriever:
     
     def __init__(self):
         """初始化检索器"""
-        self.embedding = OpenRouterEmbedding()
+        self.embedding = get_embedding_model()
         self.vector_store = VectorStore()
         self.chat_model = settings.CHAT_MODEL
         self.memory = get_memory()
@@ -149,15 +149,8 @@ class RAGRetriever:
                     result["score"] = original_score + (keyword_score * KEYWORD_BOOST_WEIGHT)
                 results.sort(key=lambda x: x["score"], reverse=True)
 
-        # 🆕 新增：过滤掉相关度过低的噪音
-        # 阈值建议：0.5 - 0.6 (DashVector 的 score 通常是 0-1 或更高，视距离类型而定)
-        # 如果是 Cosine 距离，通常 0.7 以下就很不相关了
-        SCORE_THRESHOLD = 0.5 
-        
-        valid_results = [r for r in results if r.get("score", 0) >= SCORE_THRESHOLD]
-        
-        logger.info(f"检索完成，原始: {len(results)}，有效(>{SCORE_THRESHOLD}): {len(valid_results)}")
-        return valid_results
+        logger.info(f"检索完成，找到 {len(results)} 个相关片段")
+        return results
 
     async def rerank(
         self,
@@ -263,76 +256,42 @@ class RAGRetriever:
         summary: Optional[str] = None
     ) -> list:
         """构建消息列表，支持多轮对话、摘要注入和引用溯源"""
-        
-        # 1. 动态决定 System Prompt
-        # 如果没有参考资料，就把它变成一个纯聊天助手，不要给它"引用"的压力
-        if not context or not context.strip():
-            base_system_prompt = """你是用户的好朋友，一个活泼、有趣、善解人意的聊天伙伴。
+        base_system_prompt = system_prompt or """你是一个专业的教育资料助手。你的主要目标是根据提供的参考资料回答用户的问题。
 
-【最重要的规则 - 请务必遵守】：
-1. **你现在是在闲聊，不是在查资料！** 不要说"请提出具体问题"、"我会根据资料回答"之类的话。
-2. **像朋友一样说话**：用户说"好吧"，你可以说"怎么啦，是不是有点无聊？聊点别的？"
-3. **回顾对话历史**：用户问"我刚才说了什么"，直接看上面的对话历史告诉他！
-4. **有个性**：可以开玩笑、可以吐槽、可以表达情绪，不要像机器人。
-5. **简短自然**：不要长篇大论，像微信聊天一样简短。
+【重要】引用规则：
+1. 回答时必须标注信息来源，使用格式：[来源X]
+2. 如果答案综合了多个来源，请分别标注
+3. **如果问题是关于对话历史、问候语或通用知识的，且参考资料为空或不相关，请优先使用你的对话历史或内置知识来回答。**
+4. 如果参考资料中没有相关信息，**且问题必须依赖资料才能回答（如询问具体知识点）**，请诚实说明"参考资料中未找到相关信息"。
 
-【禁止说的话】：
-- "请问您有什么具体问题需要我帮助解答的？"
-- "请提出您的具体问题"
-- "我会根据参考资料为您解答"
-- "抱歉，我无法根据您的请求提供信息"
+回答要求：
+- 准确、简洁、有条理
+- 在多轮对话中保持上下文连贯性
+- 优先使用参考资料中的原文表述"""
 
-【你应该说的话】：
-- "哈哈，怎么了？"
-- "嗯嗯，还有什么想聊的吗？"
-- "你刚才问的是xxx，我记得呢！"
-- "这门课嘛，看你基础啦~"
-"""
-        else:
-            # 如果有参考资料，启用"助教模式"，但依然保持亲和力
-            base_system_prompt = system_prompt or """你是一个专业但亲切的 AI 助教。
-
-【核心原则】：
-1. **有资料就用资料**：回答知识点时，基于参考资料，标注[来源X]。
-2. **没资料就用常识**：资料里没有的，用你的知识补充，不要说"资料里没有"。
-3. **闲聊就闲聊**：用户打招呼、说"好吧"、问"刚才说了什么"，就正常聊天，别提资料。
-4. **简洁有趣**：不要长篇大论，像个真人老师一样说话。
-"""
-
-        # 2. 注入摘要（长期记忆）
         if summary:
-            full_system_prompt = f"{base_system_prompt}
+            full_system_prompt = f"""{base_system_prompt}
 
-[之前的对话摘要（这是用户的重要背景，请记住）]
+[之前的对话摘要]
 {summary}
-[摘要结束]"
+[摘要结束]"""
         else:
             full_system_prompt = base_system_prompt
 
         messages = [{"role": "system", "content": full_system_prompt}]
 
-        # 3. 注入短期历史
         if history:
             for msg in history:
                 messages.append({"role": msg["role"], "content": msg["content"]})
 
-        # 4. 【最关键修改】动态构建用户消息
-        # 如果没有 context，就不要发"参考资料"这几个字，防止 AI 犯傻
-        if context and context.strip():
-            final_user_content = f"""### 参考资料（请在回答中引用）：
+        messages.append({
+            "role": "user",
+            "content": f"""参考资料（请在回答中使用[来源X]标注引用）：
 {context}
 
 ---
 
-### 用户问题：
-{query}"""
-        else:
-            # 没资料时，就是纯聊天！
-            final_user_content = query
-
-        messages.append({
-            "role": "user",
-            "content": final_user_content
+用户问题：{query}"""
         })
 
         return messages
@@ -361,7 +320,7 @@ class RAGRetriever:
                 json={
                     "model": self.chat_model,
                     "messages": messages,
-                    "temperature": 0.85,
+                    "temperature": 0.7,
                     "max_tokens": 2000,
                 }
             )
@@ -385,7 +344,7 @@ class RAGRetriever:
         if messages and messages[0].get("role") == "system":
             sys_content = messages[0].get("content", "")
             has_citation_rule = "[来源" in sys_content or "来源X" in sys_content
-            logger.info(f"开始流式生成回答，模型: {self.chat_model}, 引用规则: {'?' if has_citation_rule else '?'}")
+            logger.info(f"开始流式生成回答，模型: {self.chat_model}, 引用规则: {'✅' if has_citation_rule else '❌'}")
 
         async with httpx.AsyncClient(timeout=120.0) as client:
             async with client.stream(
@@ -400,7 +359,7 @@ class RAGRetriever:
                 json={
                     "model": self.chat_model,
                     "messages": messages,
-                    "temperature": 0.85,
+                    "temperature": 0.7,
                     "max_tokens": 2000,
                     "stream": True,
                 }
@@ -483,7 +442,7 @@ class RAGRetriever:
         # 2. 检索（包含混合检索）
         results = self.retrieve(rewritten_query, top_k, filter_expr)
 
-        # ?? 【修改点】删除了 if not results 的拦截块
+        # 🚨 【修改点】删除了 if not results 的拦截块
         # 即使 results 为空，也要继续往下执行，进入 LLM 生成环节
 
         # 3. 重排序（可选）
@@ -494,7 +453,7 @@ class RAGRetriever:
         context, used_sources = self.build_context(results)
 
         # 5. 生成回答（带引用溯源）
-        # ?? 最终修正：强制 system_prompt=None，确保内置引用规则生效
+        # 🔧 最终修正：强制 system_prompt=None，确保内置引用规则生效
         answer = await self.generate_answer(
             question, context, None, compressed_history, summary  # ← 强制 None
         )
