@@ -1,5 +1,9 @@
 # AI 教育资料处理服务依赖
 
+# 基础科学计算库（明确版本，确保使用预编译 wheel）
+numpy>=1.24.0,<2.0.0
+pandas>=2.0.0,<3.0.0
+
 # Web 框架
 fastapi>=0.104.0
 uvicorn[standard]>=0.24.0
@@ -40,3 +44,4 @@ docx2txt>=0.8          # Word 文档文本提取（LlamaIndex 需要）
 
 # 可选：用于更好的日志输出
 rich>=13.0.0
+
