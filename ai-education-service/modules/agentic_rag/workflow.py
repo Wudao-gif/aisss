@@ -30,7 +30,7 @@ from .events import (
     RetryEvent,
     SynthesizeEvent,
 )
-from .tools import ToolRegistry, VectorSearchTool
+from .tools import ToolRegistry, VectorSearchTool, CalculatorTool, KnowledgeGraphTool
 
 logger = logging.getLogger(__name__)
 
@@ -289,7 +289,7 @@ class AgenticRAGWorkflow(Workflow):
 
     @step
     async def reflect(self, ctx: Context, ev: ToolResultEvent) -> SynthesizeEvent | ToolCallEvent | RetryEvent:
-        """步骤4: 反思 - 评估结果质量，决定下一步"""
+        """步骤4: 反思 - 用 LLM 评估结果质量，决定下一步"""
         plan = ev.plan or await ctx.get("plan")
         all_results = ev.all_results or await ctx.get("all_results", [])
         retry_count = plan.retry_count if plan else 0
@@ -307,27 +307,77 @@ class AgenticRAGWorkflow(Workflow):
                     subtask_id=next_task.id, plan=plan, history=ev.history
                 )
 
-        # 所有子任务完成，评估结果质量
-        total_results = sum(r.get("result", {}).get("count", 0) for r in all_results)
+        # 构建上下文用于评估
+        context, sources = self._build_context(all_results)
 
-        # 结果太少，考虑重试
-        if total_results < 2 and retry_count < MAX_RETRY:
-            logger.info(f"[Reflect] 结果不足({total_results})，重试 {retry_count + 1}/{MAX_RETRY}")
+        # 用 LLM 智能评估结果质量
+        evaluation = await self._evaluate_results_with_llm(ev.query, context, retry_count)
+
+        if evaluation["decision"] == "retry" and retry_count < MAX_RETRY:
+            logger.info(f"[Reflect] LLM 判断需重试: {evaluation['reason']}")
             return RetryEvent(
-                query=ev.query, reason=f"检索结果不足，仅找到 {total_results} 条",
-                previous_results=all_results, suggestions="尝试扩大检索范围或改写查询",
-                retry_count=retry_count + 1, history=ev.history,
+                query=ev.query,
+                reason=evaluation["reason"],
+                previous_results=all_results,
+                suggestions=evaluation["suggestions"],
+                retry_count=retry_count + 1,
+                history=ev.history,
                 filter_expr=plan.filter_expr if plan else None
             )
 
-        # 构建上下文
-        context, sources = self._build_context(all_results)
-        logger.info(f"[Reflect] 结果充足，准备合成答案，来源数: {len(sources)}")
+        if evaluation["decision"] == "give_up":
+            logger.info(f"[Reflect] LLM 判断无法回答: {evaluation['reason']}")
+            # 仍然尝试回答，但标记为低置信度
 
+        logger.info(f"[Reflect] LLM 判断结果充足，准备合成答案")
         return SynthesizeEvent(
             query=ev.query, results=all_results, context=context,
             sources=sources, history=ev.history
         )
+
+    async def _evaluate_results_with_llm(self, query: str, context: str, retry_count: int) -> Dict[str, Any]:
+        """用 LLM 评估检索结果是否足够回答问题"""
+        if not context.strip():
+            return {
+                "decision": "retry" if retry_count < MAX_RETRY else "give_up",
+                "reason": "没有找到任何相关内容",
+                "suggestions": "尝试使用更宽泛的关键词"
+            }
+
+        eval_prompt = f"""评估以下检索结果是否足够回答用户问题。
+
+用户问题: {query}
+
+检索到的内容:
+{context[:3000]}
+
+请判断（只返回 JSON）:
+1. 这些内容是否包含回答问题所需的关键信息？
+2. 信息是否完整，还是只有部分相关？
+3. 是否需要补充检索？
+
+返回格式:
+{{"decision": "sufficient|retry|give_up", "reason": "判断理由", "suggestions": "如需重试的建议", "confidence": 0.0-1.0}}
+
+- sufficient: 信息足够，可以回答
+- retry: 信息不足但可能通过改写查询获得更好结果
+- give_up: 知识库中可能没有相关内容"""
+
+        try:
+            result = await self._call_llm([{"role": "user", "content": eval_prompt}], temperature=0.1)
+            if "```" in result:
+                result = result.split("```")[1].replace("json", "").strip()
+            parsed = json.loads(result)
+
+            return {
+                "decision": parsed.get("decision", "sufficient"),
+                "reason": parsed.get("reason", ""),
+                "suggestions": parsed.get("suggestions", ""),
+                "confidence": parsed.get("confidence", 0.5)
+            }
+        except Exception as e:
+            logger.warning(f"[Reflect] LLM 评估失败: {e}, 默认继续")
+            return {"decision": "sufficient", "reason": "评估失败，默认继续", "suggestions": ""}
 
     def _build_context(self, all_results: List[Dict]) -> tuple[str, List[Dict]]:
         """从所有结果构建上下文"""
@@ -392,11 +442,15 @@ def get_agentic_workflow() -> AgenticRAGWorkflow:
         vector_store = VectorStore()
         embedding_model = get_embedding_model()
 
+        # 注册所有工具
         registry.register(VectorSearchTool(vector_store, embedding_model))
+        registry.register(CalculatorTool())
+        registry.register(KnowledgeGraphTool())
 
         _agentic_workflow = AgenticRAGWorkflow(
             tool_registry=registry,
             timeout=180,
             verbose=False
         )
+        logger.info(f"AgenticRAGWorkflow 初始化完成，已注册 {len(registry._tools)} 个工具")
     return _agentic_workflow

@@ -27,7 +27,7 @@ from modules.rag_workflow import (
     get_rag_workflow, get_rag_stream_workflow,
     generate_workflow_diagram, generate_execution_trace
 )
-from modules.agentic_rag import get_agentic_workflow
+from modules.agentic_rag import get_agentic_workflow, get_agentic_stream_workflow, ProgressEvent, ProgressType
 from modules.document_workflow import (
     DocumentProcessingWorkflow,
     get_document_workflow
@@ -794,3 +794,82 @@ async def agentic_workflow_diagram():
         return HTMLResponse("<h1>无法生成工作流图表</h1><p>请确保已安装 llama-index-utils-workflow</p>")
     except Exception as e:
         return HTMLResponse(f"<h1>错误</h1><p>{e}</p>")
+
+
+@router.post(
+    "/v3/chat/stream",
+    summary="Agentic RAG 流式问答",
+    description="流式输出 Agent 思考过程和答案"
+)
+async def agentic_chat_stream(request: ChatRequest):
+    """
+    Agentic RAG 流式问答接口
+
+    SSE 事件格式:
+    - progress: Agent 思考过程（正在分析、正在检索、正在反思等）
+    - content: 答案内容（流式输出）
+    - sources: 来源信息
+    - done: 完成标记
+    """
+    async def generate_stream():
+        try:
+            workflow = get_agentic_stream_workflow()
+
+            # 构建参数
+            filter_expr = request.filter_expr
+            if not filter_expr and request.book_id:
+                filter_expr = f"book_id = '{request.book_id}'"
+
+            history = None
+            if request.history:
+                history = [{"role": m.role, "content": m.content} for m in request.history]
+
+            logger.info(f"[Agentic Stream] 问题: {request.question[:50]}...")
+
+            # 运行流式工作流
+            handler = workflow.run(
+                query=request.question,
+                history=history,
+                user_id=request.user_id,
+                book_id=request.book_id,
+                filter_expr=filter_expr
+            )
+
+            sources = []
+
+            async for event in handler.stream_events():
+                if isinstance(event, ProgressEvent):
+                    if event.progress_type == ProgressType.STREAMING:
+                        # 答案内容
+                        yield f"data: {json.dumps({'type': 'content', 'data': event.message}, ensure_ascii=False)}\n\n"
+                    elif event.progress_type == ProgressType.DONE:
+                        # 完成
+                        pass
+                    else:
+                        # 进度信息
+                        yield f"data: {json.dumps({'type': 'progress', 'step': event.progress_type.value, 'message': event.message, 'detail': event.detail}, ensure_ascii=False)}\n\n"
+
+            # 获取最终结果
+            result = await handler
+            sources = result.get("sources", [])
+
+            # 发送来源
+            source_data = [{"id": s.get("id", ""), "text": s.get("text", "")[:200]} for s in sources[:5]]
+            yield f"data: {json.dumps({'type': 'sources', 'data': source_data}, ensure_ascii=False)}\n\n"
+
+            # 完成
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+
+        except Exception as e:
+            logger.error(f"[Agentic Stream] 错误: {e}")
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(
+        generate_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        }
+    )

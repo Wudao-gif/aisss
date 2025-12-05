@@ -134,3 +134,25 @@ class SynthesizeEvent(Event):
     user_id: Optional[str] = None
     book_id: Optional[str] = None
 
+
+# ============ 流式进度事件 ============
+
+class ProgressType(str, Enum):
+    """进度类型"""
+    ROUTING = "routing"           # 正在分析问题
+    PLANNING = "planning"         # 正在规划任务
+    SEARCHING = "searching"       # 正在检索
+    REFLECTING = "reflecting"     # 正在反思
+    RETRYING = "retrying"         # 正在重试
+    SYNTHESIZING = "synthesizing" # 正在生成答案
+    STREAMING = "streaming"       # 流式输出答案
+    DONE = "done"                 # 完成
+
+
+@dataclass
+class ProgressEvent(Event):
+    """进度事件 - 用于流式输出 Agent 思考过程"""
+    progress_type: ProgressType
+    message: str                                # 用户可见的进度消息
+    detail: Optional[str] = None                # 详细信息（可选）
+    metadata: Optional[Dict[str, Any]] = None   # 额外元数据
