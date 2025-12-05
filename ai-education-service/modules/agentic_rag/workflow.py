@@ -228,9 +228,9 @@ class AgenticRAGWorkflow(Workflow):
             # 保存计划到上下文
             plan = PlanEvent(query=query, subtasks=subtasks, reasoning="",
                            history=history, filter_expr=filter_expr, retry_count=retry_count)
-            await ctx.set("plan", plan)
-            await ctx.set("all_results", [])
-            await ctx.set("current_task_idx", 0)
+            await ctx.store.set("plan", plan)
+            await ctx.store.set("all_results", [])
+            await ctx.store.set("current_task_idx", 0)
 
             first = subtasks[0]
             return ToolCallEvent(
@@ -269,9 +269,9 @@ class AgenticRAGWorkflow(Workflow):
             logger.info(f"[Execute] {ev.tool_name} 完成, 结果数: {result.get('count', 0)}")
 
             # 收集所有结果
-            all_results = await ctx.get("all_results", [])
+            all_results = await ctx.store.get("all_results", [])
             all_results.append({"tool": ev.tool_name, "result": result, "subtask_id": ev.subtask_id})
-            await ctx.set("all_results", all_results)
+            await ctx.store.set("all_results", all_results)
 
             return ToolResultEvent(
                 query=ev.query, tool_name=ev.tool_name, tool_args=ev.tool_args,
@@ -290,15 +290,15 @@ class AgenticRAGWorkflow(Workflow):
     @step
     async def reflect(self, ctx: Context, ev: ToolResultEvent) -> SynthesizeEvent | ToolCallEvent | RetryEvent:
         """步骤4: 反思 - 用 LLM 评估结果质量，决定下一步"""
-        plan = ev.plan or await ctx.get("plan")
-        all_results = ev.all_results or await ctx.get("all_results", [])
+        plan = ev.plan or await ctx.store.get("plan")
+        all_results = ev.all_results or await ctx.store.get("all_results", [])
         retry_count = plan.retry_count if plan else 0
 
         # 检查是否还有未执行的子任务
         if plan and plan.subtasks:
-            current_idx = await ctx.get("current_task_idx", 0)
+            current_idx = await ctx.store.get("current_task_idx", 0)
             if current_idx + 1 < len(plan.subtasks):
-                await ctx.set("current_task_idx", current_idx + 1)
+                await ctx.store.set("current_task_idx", current_idx + 1)
                 next_task = plan.subtasks[current_idx + 1]
                 logger.info(f"[Reflect] 继续执行子任务 {next_task.id}")
                 return ToolCallEvent(

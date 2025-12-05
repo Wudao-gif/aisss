@@ -104,8 +104,8 @@ class VectorSearchTool(Tool):
     async def execute(self, query: str, top_k: int = 5, filter_expr: str = None) -> Dict[str, Any]:
         """执行向量检索"""
         try:
-            # 生成 embedding
-            embedding = self.embedding_model.get_query_embedding(query)
+            # 生成 embedding（使用 get_text_embedding）
+            embedding = self.embedding_model.get_text_embedding(query)
             
             # 检索
             results = self.vector_store.search(

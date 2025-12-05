@@ -37,8 +37,11 @@ class ProcessingResult:
     file_key: str
     chunks_count: int = 0
     vectors_stored: int = 0
+    nodes_count: int = 0  # 别名，与 chunks_count 相同
+    kg_entities: int = 0  # 知识图谱实体数
+    kg_relations: int = 0  # 知识图谱关系数
     error: Optional[str] = None
-    
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "success": self.success,
@@ -47,6 +50,9 @@ class ProcessingResult:
             "file_key": self.file_key,
             "chunks_count": self.chunks_count,
             "vectors_stored": self.vectors_stored,
+            "nodes_count": self.nodes_count,
+            "kg_entities": self.kg_entities,
+            "kg_relations": self.kg_relations,
             "error": self.error
         }
 

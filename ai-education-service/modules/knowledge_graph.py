@@ -140,12 +140,31 @@ class KnowledgeGraphStore:
     async def search_entities(self, query: str, entity_type: str = None,
                              book_id: str = None, limit: int = 10) -> List[Dict]:
         """搜索实体"""
-        cypher = "MATCH (e:Entity) WHERE e.name CONTAINS $query"
-        params = {"query": query, "limit": limit}
+        cypher = "MATCH (e:Entity)"
+        params = {"limit": limit}
+        conditions = []
+
+        if query:
+            conditions.append("e.name CONTAINS $query")
+            params["query"] = query
 
         if entity_type:
-            cypher += " AND e.type = $type"
+            conditions.append("e.type = $type")
             params["type"] = entity_type
+
+        if book_id:
+            conditions.append("e.book_id = $book_id")
+            params["book_id"] = book_id
+
+        if conditions:
+            cypher += " WHERE " + " AND ".join(conditions)
+
+        cypher += " RETURN e LIMIT $limit"
+
+        async with self.driver.session() as session:
+            result = await session.run(cypher, **params)
+            records = await result.data()
+            return [dict(r["e"]) for r in records]
 
     # ============ 关系操作 ============
 

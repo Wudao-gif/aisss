@@ -201,9 +201,9 @@ class AgenticStreamWorkflow(Workflow):
 
             plan = PlanEvent(query=query, subtasks=subtasks, reasoning="",
                            history=history, filter_expr=filter_expr, retry_count=retry_count)
-            await ctx.set("plan", plan)
-            await ctx.set("all_results", [])
-            await ctx.set("current_task_idx", 0)
+            await ctx.store.set("plan", plan)
+            await ctx.store.set("all_results", [])
+            await ctx.store.set("current_task_idx", 0)
 
             first = subtasks[0]
             ctx.write_event_to_stream(ProgressEvent(
@@ -230,9 +230,9 @@ class AgenticStreamWorkflow(Workflow):
 
         try:
             result = await tool.execute(**ev.tool_args)
-            all_results = await ctx.get("all_results", [])
+            all_results = await ctx.store.get("all_results", [])
             all_results.append({"tool": ev.tool_name, "result": result, "subtask_id": ev.subtask_id})
-            await ctx.set("all_results", all_results)
+            await ctx.store.set("all_results", all_results)
 
             ctx.write_event_to_stream(ProgressEvent(
                 progress_type=ProgressType.SEARCHING,
@@ -251,15 +251,15 @@ class AgenticStreamWorkflow(Workflow):
     @step
     async def reflect(self, ctx: Context, ev: ToolResultEvent) -> SynthesizeEvent | ToolCallEvent | RetryEvent:
         """步骤4: 反思"""
-        plan = ev.plan or await ctx.get("plan")
-        all_results = ev.all_results or await ctx.get("all_results", [])
+        plan = ev.plan or await ctx.store.get("plan")
+        all_results = ev.all_results or await ctx.store.get("all_results", [])
         retry_count = plan.retry_count if plan else 0
 
         # 检查是否还有子任务
         if plan and plan.subtasks:
-            idx = await ctx.get("current_task_idx", 0)
+            idx = await ctx.store.get("current_task_idx", 0)
             if idx + 1 < len(plan.subtasks):
-                await ctx.set("current_task_idx", idx + 1)
+                await ctx.store.set("current_task_idx", idx + 1)
                 next_task = plan.subtasks[idx + 1]
                 ctx.write_event_to_stream(ProgressEvent(
                     progress_type=ProgressType.SEARCHING,

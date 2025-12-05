@@ -6,7 +6,6 @@
 import logging
 from pathlib import Path
 from typing import Optional, Dict, Any
-from dataclasses import dataclass
 
 from llama_index.core.workflow import (
     Event,
@@ -27,8 +26,8 @@ logger = logging.getLogger(__name__)
 
 
 # ============ 事件定义 ============
+# 使用 Pydantic 风格的类型注解（Event 基于 Pydantic）
 
-@dataclass
 class ValidationEvent(Event):
     """文件验证完成事件"""
     oss_key: str
@@ -38,7 +37,6 @@ class ValidationEvent(Event):
     error: Optional[str] = None
 
 
-@dataclass
 class DownloadEvent(Event):
     """文件下载完成事件"""
     oss_key: str
@@ -46,7 +44,6 @@ class DownloadEvent(Event):
     metadata: Dict[str, Any]
 
 
-@dataclass
 class ProcessEvent(Event):
     """文档处理完成事件"""
     oss_key: str
@@ -55,17 +52,15 @@ class ProcessEvent(Event):
     metadata: Dict[str, Any]
 
 
-@dataclass
 class StoreEvent(Event):
     """向量存储完成事件"""
     oss_key: str
     local_path: Path
     nodes_count: int
     vectors_stored: int
-    nodes: list = None  # 传递给知识图谱提取
+    nodes: Optional[list] = None  # 传递给知识图谱提取
 
 
-@dataclass
 class KGExtractEvent(Event):
     """知识图谱提取完成事件"""
     oss_key: str
@@ -76,7 +71,6 @@ class KGExtractEvent(Event):
     kg_relations: int = 0
 
 
-@dataclass
 class FailedEvent(Event):
     """处理失败事件"""
     oss_key: str
@@ -256,13 +250,12 @@ class DocumentProcessingWorkflow(Workflow):
             message="文档处理成功",
             file_key=ev.oss_key,
             chunks_count=ev.nodes_count,
-            vectors_stored=ev.vectors_stored
+            vectors_stored=ev.vectors_stored,
+            nodes_count=ev.nodes_count,
+            kg_entities=ev.kg_entities,
+            kg_relations=ev.kg_relations
         )
-        # 添加知识图谱信息
-        result_dict = result.to_dict()
-        result_dict["kg_entities"] = ev.kg_entities
-        result_dict["kg_relations"] = ev.kg_relations
-        return StopEvent(result=result_dict)
+        return StopEvent(result=result)
 
     @step
     async def cleanup_failed(self, ctx: Context, ev: FailedEvent) -> StopEvent:

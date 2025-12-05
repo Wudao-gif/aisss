@@ -83,32 +83,32 @@ async def health_check():
         500: {"model": ErrorResponse, "description": "服务器内部错误"}
     },
     summary="处理文档",
-    description="从 OSS 下载文档，进行解析、分块、向量化，并存储到向量数据库"
+    description="从 OSS 下载文档，进行解析、分块、向量化，存储到向量数据库，并提取知识图谱"
 )
 async def process_document(
     request: ProcessDocumentRequest,
     _: bool = Depends(verify_api_key)
 ):
     """
-    处理文档端点
-    
+    处理文档端点（使用 Workflow）
+
     接收 OSS 文件信息，执行完整的处理流程：
     1. 从 OSS 下载文件
     2. 使用 LlamaIndex 解析文档
     3. 文本分块
-    4. 生成向量（通过 OpenRouter）
-    5. 存储到 DashVector
+    4. 生成向量并存储到 DashVector
+    5. 提取知识图谱并存储到 Neo4j
     """
     try:
-        logger.info(f"收到处理请求: {request.oss_key}")
-        
-        pipeline = get_pipeline()
-        result = pipeline.process(
+        logger.info(f"[Workflow] 收到处理请求: {request.oss_key}")
+
+        workflow = get_document_workflow()
+        result = await workflow.run(
             oss_key=request.oss_key,
             bucket=request.bucket,
-            metadata=request.metadata
+            metadata=request.metadata or {}
         )
-        
+
         if result.success:
             return ProcessDocumentResponse(
                 success=True,
@@ -121,9 +121,9 @@ async def process_document(
                 message=result.message,
                 data=result.to_dict()
             )
-            
+
     except Exception as e:
-        logger.error(f"处理文档时发生错误: {e}")
+        logger.error(f"[Workflow] 处理文档时发生错误: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=str(e)
@@ -134,7 +134,7 @@ async def process_document(
     "/process-document/async",
     response_model=ProcessDocumentResponse,
     summary="异步处理文档",
-    description="异步处理文档，立即返回，后台执行处理"
+    description="异步处理文档，立即返回，后台执行处理（使用 Workflow，包含知识图谱提取）"
 )
 async def process_document_async(
     request: ProcessDocumentRequest,
@@ -142,33 +142,107 @@ async def process_document_async(
     _: bool = Depends(verify_api_key)
 ):
     """
-    异步处理文档端点
-    
+    异步处理文档端点（使用 Workflow）
+
     立即返回响应，在后台执行处理任务。
-    适用于大文件处理场景。
+    包含知识图谱提取功能。
     """
-    def background_process():
+    import asyncio
+
+    async def background_process_async():
         try:
-            pipeline = get_pipeline()
-            result = pipeline.process(
+            logger.info(f"[Workflow] 后台开始处理: {request.oss_key}")
+            workflow = get_document_workflow()
+            result = await workflow.run(
                 oss_key=request.oss_key,
                 bucket=request.bucket,
-                metadata=request.metadata
+                metadata=request.metadata or {}
             )
-            logger.info(f"后台处理完成: {request.oss_key}, 结果: {result.success}")
+            logger.info(f"[Workflow] 后台处理完成: {request.oss_key}, 结果: {result.success}, KG: {result.kg_entities} 实体, {result.kg_relations} 关系")
         except Exception as e:
-            logger.error(f"后台处理失败: {request.oss_key}, 错误: {e}")
-    
+            logger.error(f"[Workflow] 后台处理失败: {request.oss_key}, 错误: {e}")
+
+    def background_process():
+        # 在新的事件循环中运行异步任务
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(background_process_async())
+        finally:
+            loop.close()
+
     background_tasks.add_task(background_process)
-    
+
     return ProcessDocumentResponse(
         success=True,
-        message="任务已提交，正在后台处理",
+        message="任务已提交，正在后台处理（包含知识图谱提取）",
         data={
             "status": "pending",
             "file_key": request.oss_key
         }
     )
+
+
+@router.post(
+    "/v2/process-document",
+    response_model=ProcessDocumentResponse,
+    summary="处理文档 (Workflow 版本)",
+    description="使用 LlamaIndex Workflows 处理文档，包含知识图谱提取"
+)
+async def process_document_v2(
+    request: ProcessDocumentRequest,
+    _: bool = Depends(verify_api_key)
+):
+    """
+    Workflow 版本的文档处理端点
+
+    使用事件驱动的工作流架构，包含：
+    - 文件验证
+    - OSS 下载
+    - 文档解析和分块
+    - 向量存储
+    - 知识图谱提取（Neo4j）
+    """
+    try:
+        logger.info(f"[Workflow] 收到处理请求: {request.oss_key}")
+
+        workflow = get_document_workflow()
+        result = await workflow.run(
+            oss_key=request.oss_key,
+            bucket=request.bucket,
+            metadata=request.metadata or {}
+        )
+
+        if result.success:
+            return ProcessDocumentResponse(
+                success=True,
+                message=result.message,
+                data={
+                    "status": result.status.value,
+                    "file_key": result.file_key,
+                    "nodes_count": result.nodes_count,
+                    "vectors_stored": result.vectors_stored,
+                    "kg_entities": result.kg_entities,
+                    "kg_relations": result.kg_relations
+                }
+            )
+        else:
+            return ProcessDocumentResponse(
+                success=False,
+                message=result.message,
+                data={
+                    "status": result.status.value,
+                    "file_key": result.file_key,
+                    "error": result.error
+                }
+            )
+
+    except Exception as e:
+        logger.error(f"[Workflow] 处理文档时发生错误: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
 
 
 # ==================== RAG 检索接口 ====================
@@ -852,6 +926,14 @@ async def agentic_chat_stream(request: ChatRequest):
             # 获取最终结果
             result = await handler
             sources = result.get("sources", [])
+
+            # 如果是 chitchat/clarify 类型，answer 没有通过流式发送，需要在这里发送
+            answer = result.get("answer", "")
+            query_type = result.get("query_type", "")
+            if answer and query_type in ("chitchat", "clarify"):
+                # 逐字发送答案以保持流式效果
+                for char in answer:
+                    yield f"data: {json.dumps({'type': 'content', 'data': char}, ensure_ascii=False)}\n\n"
 
             # 发送来源
             source_data = [{"id": s.get("id", ""), "text": s.get("text", "")[:200]} for s in sources[:5]]

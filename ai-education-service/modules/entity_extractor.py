@@ -32,16 +32,34 @@ class EntityExtractor:
         self.chat_model = settings.CHAT_MODEL
 
     async def extract_from_chunks(self, chunks: List[Dict], book_id: str) -> ExtractionResult:
-        """从文档块中提取实体和关系"""
+        """从文档块中提取实体和关系（优化版：合并 chunks 减少 LLM 调用）"""
         all_entities = []
         all_relations = []
         entity_map = {}  # name -> entity_id 映射，用于去重
 
-        for i, chunk in enumerate(chunks):
-            text = chunk.get("text", "")
+        # 合并 chunks，每组最多 5000 字符，减少 LLM 调用次数
+        merged_texts = []
+        current_text = ""
+        MAX_CHARS = 5000
+
+        for chunk in chunks:
+            text = chunk.get("text", "").strip()
             if len(text) < 50:  # 跳过太短的块
                 continue
 
+            if len(current_text) + len(text) > MAX_CHARS:
+                if current_text:
+                    merged_texts.append(current_text)
+                current_text = text
+            else:
+                current_text += "\n\n" + text if current_text else text
+
+        if current_text:
+            merged_texts.append(current_text)
+
+        logger.info(f"合并 {len(chunks)} 个 chunks 为 {len(merged_texts)} 个批次进行提取")
+
+        for i, text in enumerate(merged_texts):
             try:
                 entities, relations = await self._extract_from_text(text, book_id, i)
 
@@ -61,9 +79,10 @@ class EntityExtractor:
                                 r.target_id = new_id
 
                 all_relations.extend(relations)
+                logger.info(f"批次 {i+1}/{len(merged_texts)} 提取完成: {len(entities)} 实体, {len(relations)} 关系")
 
             except Exception as e:
-                logger.warning(f"块 {i} 提取失败: {e}")
+                logger.warning(f"批次 {i} 提取失败: {e}")
                 continue
 
         logger.info(f"提取完成: {len(all_entities)} 实体, {len(all_relations)} 关系")
