@@ -20,6 +20,9 @@ dashscope
 # LlamaIndex 核心
 llama-index-core
 
+# LlamaIndex Workflows 可视化工具
+llama-index-utils-workflow
+
 # LlamaIndex 文件读取器
 llama-index-readers-file
 

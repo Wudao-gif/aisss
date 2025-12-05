@@ -15,7 +15,22 @@ from .vector_store import VectorStore
 from .pipeline import ProcessingPipeline
 from .rag_retriever import RAGRetriever
 
+# LlamaIndex Workflows
+from .rag_workflow import (
+    RAGWorkflow,
+    RAGStreamWorkflow,
+    get_rag_workflow,
+    get_rag_stream_workflow,
+    generate_workflow_diagram,
+    generate_execution_trace,
+)
+from .document_workflow import (
+    DocumentProcessingWorkflow,
+    get_document_workflow,
+)
+
 __all__ = [
+    # 原有模块
     "OSSDownloader",
     "DocumentProcessor",
     "OpenRouterEmbedding",
@@ -25,5 +40,14 @@ __all__ = [
     "VectorStore",
     "ProcessingPipeline",
     "RAGRetriever",
+    # Workflow 模块
+    "RAGWorkflow",
+    "RAGStreamWorkflow",
+    "get_rag_workflow",
+    "get_rag_stream_workflow",
+    "generate_workflow_diagram",
+    "generate_execution_trace",
+    "DocumentProcessingWorkflow",
+    "get_document_workflow",
 ]
 
