@@ -27,6 +27,7 @@ from modules.rag_workflow import (
     get_rag_workflow, get_rag_stream_workflow,
     generate_workflow_diagram, generate_execution_trace
 )
+from modules.agentic_rag import get_agentic_workflow
 from modules.document_workflow import (
     DocumentProcessingWorkflow,
     get_document_workflow
@@ -707,3 +708,89 @@ async def chat_stream_v2(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=str(e)
         )
+
+
+# ==================== Agentic RAG v3 ====================
+
+@router.post(
+    "/v3/chat",
+    response_model=ChatResponse,
+    summary="Agentic RAG 问答",
+    description="基于智能 Agent 的 RAG 问答，支持动态路由、任务规划、反思重试"
+)
+async def agentic_chat(request: ChatRequest):
+    """
+    Agentic RAG 问答接口
+
+    特性:
+    - 动态路由: 根据问题类型选择处理策略
+    - 任务规划: 复杂问题分解为子任务
+    - 反思循环: 结果不满意时自动重试
+    - 多工具协作: 支持多种检索工具
+    """
+    try:
+        workflow = get_agentic_workflow()
+
+        # 构建 filter_expr
+        filter_expr = request.filter_expr
+        if not filter_expr and request.book_id:
+            filter_expr = f"book_id = '{request.book_id}'"
+
+        # 转换历史格式
+        history = None
+        if request.history:
+            history = [{"role": m.role, "content": m.content} for m in request.history]
+
+        logger.info(f"[Agentic] 收到问题: {request.question[:50]}...")
+
+        # 运行工作流
+        result = await workflow.run(
+            query=request.question,
+            history=history,
+            user_id=request.user_id,
+            book_id=request.book_id,
+            filter_expr=filter_expr,
+            top_k=request.top_k
+        )
+
+        # 转换来源格式
+        sources = [
+            SearchResult(
+                id=s.get("id", ""),
+                text=s.get("text", "")[:500],
+                score=s.get("score", 0.0),
+                metadata=s.get("metadata", "{}")
+            )
+            for s in result.get("sources", [])[:5]
+        ]
+
+        return ChatResponse(
+            success=True,
+            answer=result.get("answer", ""),
+            sources=sources,
+            has_context=result.get("has_context", False)
+        )
+
+    except Exception as e:
+        logger.error(f"[Agentic] 问答失败: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
+
+
+@router.get(
+    "/v3/workflow/diagram",
+    response_class=HTMLResponse,
+    summary="Agentic Workflow 可视化"
+)
+async def agentic_workflow_diagram():
+    """生成 Agentic RAG Workflow 的可视化图表"""
+    try:
+        from modules.agentic_rag.workflow import AgenticRAGWorkflow
+        filename = generate_workflow_diagram(AgenticRAGWorkflow, "agentic_workflow.html")
+        if filename and Path(filename).exists():
+            return FileResponse(filename, media_type="text/html")
+        return HTMLResponse("<h1>无法生成工作流图表</h1><p>请确保已安装 llama-index-utils-workflow</p>")
+    except Exception as e:
+        return HTMLResponse(f"<h1>错误</h1><p>{e}</p>")
