@@ -1,47 +1,43 @@
 # AI 教育资料处理服务依赖
 
-# 基础科学计算库（明确版本，确保使用预编译 wheel）
-numpy>=1.24.0,<2.0.0
-pandas>=2.0.0,<3.0.0
-
 # Web 框架
-fastapi>=0.104.0
-uvicorn[standard]>=0.24.0
+fastapi
+uvicorn[standard]
 
 # 配置管理
-pydantic>=2.5.0
-pydantic-settings>=2.1.0
+pydantic
+pydantic-settings
 
 # 阿里云 OSS
-oss2>=2.18.0
+oss2
 
 # 阿里云 DashVector
-dashvector>=1.0.0
+dashvector
 
-# 阿里云 DashScope (用于 Qwen2.5-VL-Embedding 多模态嵌入)
-dashscope>=1.14.0
+# 阿里云 DashScope
+dashscope
 
 # LlamaIndex 核心
-llama-index-core>=0.10.0
+llama-index-core
 
 # LlamaIndex 文件读取器
-llama-index-readers-file>=0.1.0
+llama-index-readers-file
 
-# LlamaParse - 更好的 PDF 解析
-llama-cloud-services>=0.6.0
+# LlamaParse
+llama-cloud-services
 
-# HTTP 客户端（用于 OpenRouter API）
-httpx>=0.25.0
+# HTTP 客户端
+httpx
 
 # 重试机制
-tenacity>=8.2.0
+tenacity
 
-# 文档处理依赖
-pypdf>=3.17.0          # PDF 处理
-python-docx>=1.0.0     # Word 文档处理
-python-pptx>=0.6.21    # PPT 处理
-docx2txt>=0.8          # Word 文档文本提取（LlamaIndex 需要）
+# 文档处理
+pypdf
+python-docx
+python-pptx
+docx2txt
 
-# 可选：用于更好的日志输出
-rich>=13.0.0
+# 日志
+rich
 

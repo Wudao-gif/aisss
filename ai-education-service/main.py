@@ -33,7 +33,10 @@ async def lifespan(app: FastAPI):
     logger.info(f"📦 OSS Bucket: {settings.OSS_BUCKET}")
     logger.info(f"🔗 DashVector Collection: {settings.DASHVECTOR_COLLECTION}")
     # 根据提供商显示正确的嵌入模型
-    if settings.EMBEDDING_PROVIDER.lower() == "dashscope":
+    provider = settings.EMBEDDING_PROVIDER.lower()
+    if provider == "qwen25vl":
+        logger.info(f"🤖 Embedding: Qwen2.5-VL-Embedding (维度: {settings.EMBEDDING_DIMENSION})")
+    elif provider == "dashscope":
         logger.info(f"🤖 Embedding: DashScope/{settings.DASHSCOPE_EMBEDDING_MODEL} (维度: {settings.EMBEDDING_DIMENSION})")
     else:
         logger.info(f"🤖 Embedding: OpenRouter/{settings.EMBEDDING_MODEL} (维度: {settings.EMBEDDING_DIMENSION})")
