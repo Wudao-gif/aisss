@@ -75,6 +75,11 @@ class Settings(BaseSettings):
     # ==================== Redis 配置（对话摘要存储）====================
     REDIS_URL: Optional[str] = None  # 格式: redis://localhost:6379/0
 
+    # ==================== Neo4j 知识图谱配置 ====================
+    NEO4J_URI: str = "bolt://localhost:7687"
+    NEO4J_USER: str = "neo4j"
+    NEO4J_PASSWORD: str = "your_password_here"
+
     # 对话摘要配置
     SUMMARY_TOKEN_THRESHOLD: int = 2000  # 触发压缩的 Token 阈值
     SUMMARY_CHAR_THRESHOLD: int = 3000   # 触发压缩的中文字符阈值

@@ -44,3 +44,5 @@ docx2txt
 # 日志
 rich
 
+# Neo4j 知识图谱
+neo4j

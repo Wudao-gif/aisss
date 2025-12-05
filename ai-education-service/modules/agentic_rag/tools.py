@@ -230,12 +230,13 @@ class CalculatorTool(Tool):
 
 
 class KnowledgeGraphTool(Tool):
-    """知识图谱工具 - 提取和查询实体关系"""
+    """知识图谱工具 - 使用 Neo4j 查询实体关系"""
 
     name = "knowledge_graph"
-    description = "从文本中提取实体和关系，或查询实体间的关联。适合理解概念之间的关系。"
+    description = "查询知识图谱中的实体和关系。适合理解概念之间的关系、查找定义、探索知识结构。"
 
-    def __init__(self):
+    def __init__(self, kg_store=None):
+        self.kg_store = kg_store  # 延迟初始化
         self.chat_model = settings.CHAT_MODEL
 
     @classmethod
@@ -243,101 +244,112 @@ class KnowledgeGraphTool(Tool):
         return {
             "type": "object",
             "properties": {
-                "query": {"type": "string", "description": "要查询的实体或关系"},
-                "context": {"type": "string", "description": "用于提取知识的上下文文本"},
-                "operation": {"type": "string", "enum": ["extract", "query"], "description": "操作类型"}
+                "query": {"type": "string", "description": "要查询的实体名称或自然语言问题"},
+                "entity_type": {"type": "string", "description": "实体类型过滤（可选）"},
+                "book_id": {"type": "string", "description": "限制在某本书内查询（可选）"},
+                "operation": {"type": "string", "enum": ["search", "relations", "path"],
+                             "description": "操作: search=搜索实体, relations=查关系, path=查路径"}
             },
             "required": ["query"]
         }
 
-    async def execute(self, query: str, context: str = "", operation: str = "extract", **kwargs) -> Dict[str, Any]:
-        """执行知识图谱操作"""
+    async def _get_store(self):
+        """延迟获取 KG Store"""
+        if self.kg_store is None:
+            from ..knowledge_graph import get_kg_store
+            self.kg_store = await get_kg_store()
+        return self.kg_store
+
+    async def execute(self, query: str, entity_type: str = None, book_id: str = None,
+                     operation: str = "search", **kwargs) -> Dict[str, Any]:
+        """执行知识图谱查询"""
         try:
-            if operation == "extract" and context:
-                # 从上下文提取实体关系
-                return await self._extract_entities(query, context)
+            store = await self._get_store()
+
+            if operation == "search":
+                return await self._search_entities(store, query, entity_type, book_id)
+            elif operation == "relations":
+                return await self._get_entity_relations(store, query, book_id)
+            elif operation == "path":
+                return await self._find_path(store, query)
             else:
-                # 查询实体关系（需要外部知识图谱，这里用 LLM 模拟）
-                return await self._query_relations(query)
+                # 默认使用自然语言查询
+                return await self._natural_query(store, query, book_id)
         except Exception as e:
-            logger.error(f"知识图谱操作失败: {e}")
+            logger.error(f"知识图谱查询失败: {e}")
             return {"success": False, "error": str(e), "results": [], "count": 0}
 
-    async def _extract_entities(self, query: str, context: str) -> Dict[str, Any]:
-        """从文本提取实体和关系"""
-        prompt = f"""从以下文本中提取与"{query}"相关的实体和关系。
+    async def _search_entities(self, store, query: str, entity_type: str, book_id: str) -> Dict:
+        """搜索实体"""
+        entities = await store.search_entities(query, entity_type, book_id, limit=10)
 
-文本:
-{context[:2000]}
+        results = []
+        for e in entities:
+            text = f"【{e.get('type', '实体')}】{e.get('name', '')}"
+            if e.get('properties'):
+                text += f" - {e.get('properties', {})}"
+            results.append({"text": text, "score": 1.0, "entity": e})
 
-请提取（返回 JSON）:
-{{"entities": ["实体1", "实体2"], "relations": [{{"subject": "主体", "predicate": "关系", "object": "客体"}}]}}"""
+        return {"success": True, "results": results, "count": len(results), "entities": entities}
 
-        try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(
-                    f"{settings.OPENROUTER_BASE_URL}/chat/completions",
-                    headers={"Authorization": f"Bearer {settings.OPENROUTER_API_KEY}"},
-                    json={"model": self.chat_model, "messages": [{"role": "user", "content": prompt}], "temperature": 0.1}
-                )
-                result = response.json()["choices"][0]["message"]["content"]
+    async def _get_entity_relations(self, store, query: str, book_id: str) -> Dict:
+        """获取实体的关系"""
+        # 先搜索实体
+        entities = await store.search_entities(query, book_id=book_id, limit=1)
+        if not entities:
+            return {"success": True, "results": [], "count": 0, "message": f"未找到实体: {query}"}
 
-                if "```" in result:
-                    result = result.split("```")[1].replace("json", "").strip()
+        entity = entities[0]
+        relations = await store.get_relations(entity["id"])
 
-                import json
-                parsed = json.loads(result)
+        results = []
+        for r in relations:
+            source = r["source"].get("name", "")
+            target = r["target"].get("name", "")
+            rel_type = r["relation"].get("type", "关联")
+            text = f"{source} --[{rel_type}]--> {target}"
+            results.append({"text": text, "score": 1.0, "relation": r})
 
-                # 格式化为统一的结果格式
-                text_result = f"实体: {', '.join(parsed.get('entities', []))}\n"
-                for rel in parsed.get('relations', []):
-                    text_result += f"关系: {rel['subject']} --[{rel['predicate']}]--> {rel['object']}\n"
+        return {"success": True, "results": results, "count": len(results), "relations": relations}
 
-                return {
-                    "success": True,
-                    "entities": parsed.get("entities", []),
-                    "relations": parsed.get("relations", []),
-                    "results": [{"text": text_result, "score": 1.0}],
-                    "count": len(parsed.get("entities", [])) + len(parsed.get("relations", []))
-                }
-        except Exception as e:
-            logger.error(f"实体提取失败: {e}")
-            return {"success": False, "error": str(e), "results": [], "count": 0}
+    async def _find_path(self, store, query: str) -> Dict:
+        """查找两个实体之间的路径"""
+        # 解析查询中的两个实体（格式: "A 和 B" 或 "A to B"）
+        import re
+        parts = re.split(r'\s+(?:和|与|to|->)\s+', query, maxsplit=1)
+        if len(parts) != 2:
+            return {"success": False, "error": "请指定两个实体，如: '微积分 和 导数'", "results": [], "count": 0}
 
-    async def _query_relations(self, query: str) -> Dict[str, Any]:
-        """查询实体关系（用 LLM 模拟知识图谱查询）"""
-        prompt = f"""作为知识图谱，回答关于"{query}"的实体关系问题。
+        # 搜索两个实体
+        e1 = await store.search_entities(parts[0].strip(), limit=1)
+        e2 = await store.search_entities(parts[1].strip(), limit=1)
 
-请提供:
-1. 相关实体
-2. 实体之间的关系
-3. 关键属性
+        if not e1 or not e2:
+            return {"success": True, "results": [], "count": 0, "message": "未找到指定实体"}
 
-返回 JSON: {{"answer": "简要回答", "entities": [], "relations": []}}"""
+        paths = await store.find_path(e1[0]["id"], e2[0]["id"])
 
-        try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(
-                    f"{settings.OPENROUTER_BASE_URL}/chat/completions",
-                    headers={"Authorization": f"Bearer {settings.OPENROUTER_API_KEY}"},
-                    json={"model": self.chat_model, "messages": [{"role": "user", "content": prompt}], "temperature": 0.3}
-                )
-                result = response.json()["choices"][0]["message"]["content"]
+        results = []
+        for p in paths:
+            nodes = [n.get("name", "") for n in p.get("nodes", [])]
+            text = " -> ".join(nodes)
+            results.append({"text": text, "score": 1.0, "path": p})
 
-                if "```" in result:
-                    result = result.split("```")[1].replace("json", "").strip()
+        return {"success": True, "results": results, "count": len(results), "paths": paths}
 
-                import json
-                parsed = json.loads(result)
+    async def _natural_query(self, store, query: str, book_id: str) -> Dict:
+        """自然语言查询（LLM 生成 Cypher）"""
+        records = await store.query_by_pattern(query, book_id)
 
-                return {
-                    "success": True,
-                    "answer": parsed.get("answer", ""),
-                    "entities": parsed.get("entities", []),
-                    "relations": parsed.get("relations", []),
-                    "results": [{"text": parsed.get("answer", ""), "score": 0.8}],
-                    "count": 1
-                }
-        except Exception as e:
-            logger.error(f"知识查询失败: {e}")
-            return {"success": False, "error": str(e), "results": [], "count": 0}
+        results = []
+        for r in records:
+            # 格式化结果
+            text_parts = []
+            for k, v in r.items():
+                if isinstance(v, dict):
+                    text_parts.append(f"{v.get('name', str(v))}")
+                else:
+                    text_parts.append(str(v))
+            results.append({"text": " | ".join(text_parts), "score": 0.8, "data": r})
+
+        return {"success": True, "results": results, "count": len(results)}

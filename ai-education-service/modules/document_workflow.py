@@ -62,6 +62,18 @@ class StoreEvent(Event):
     local_path: Path
     nodes_count: int
     vectors_stored: int
+    nodes: list = None  # 传递给知识图谱提取
+
+
+@dataclass
+class KGExtractEvent(Event):
+    """知识图谱提取完成事件"""
+    oss_key: str
+    local_path: Path
+    nodes_count: int
+    vectors_stored: int
+    kg_entities: int = 0
+    kg_relations: int = 0
 
 
 @dataclass
@@ -185,7 +197,8 @@ class DocumentProcessingWorkflow(Workflow):
                 oss_key=ev.oss_key,
                 local_path=ev.local_path,
                 nodes_count=len(ev.nodes),
-                vectors_stored=vectors_stored
+                vectors_stored=vectors_stored,
+                nodes=ev.nodes  # 传递给知识图谱提取
             )
         except Exception as e:
             logger.error(f"[Workflow] 向量存储失败: {e}")
@@ -197,8 +210,43 @@ class DocumentProcessingWorkflow(Workflow):
             )
 
     @step
-    async def cleanup_success(self, ctx: Context, ev: StoreEvent) -> StopEvent:
-        """步骤5a: 成功后清理临时文件"""
+    async def extract_knowledge_graph(self, ctx: Context, ev: StoreEvent) -> KGExtractEvent:
+        """步骤5: 提取知识图谱（可选，失败不影响主流程）"""
+        kg_entities, kg_relations = 0, 0
+
+        try:
+            from .entity_extractor import extract_and_save
+
+            # 从 nodes 提取 book_id
+            book_id = None
+            if ev.nodes:
+                first_node = ev.nodes[0]
+                book_id = first_node.metadata.get("book_id") if hasattr(first_node, 'metadata') else None
+
+            if book_id and ev.nodes:
+                # 转换 nodes 为 chunks 格式
+                chunks = [{"text": n.get_content(), "metadata": n.metadata} for n in ev.nodes if hasattr(n, 'get_content')]
+
+                if chunks:
+                    result = await extract_and_save(chunks, book_id)
+                    kg_entities = result.get("saved", {}).get("entities", 0)
+                    kg_relations = result.get("saved", {}).get("relations", 0)
+                    logger.info(f"[Workflow] 知识图谱提取完成: {kg_entities} 实体, {kg_relations} 关系")
+        except Exception as e:
+            logger.warning(f"[Workflow] 知识图谱提取失败（不影响主流程）: {e}")
+
+        return KGExtractEvent(
+            oss_key=ev.oss_key,
+            local_path=ev.local_path,
+            nodes_count=ev.nodes_count,
+            vectors_stored=ev.vectors_stored,
+            kg_entities=kg_entities,
+            kg_relations=kg_relations
+        )
+
+    @step
+    async def cleanup_success(self, ctx: Context, ev: KGExtractEvent) -> StopEvent:
+        """步骤6a: 成功后清理临时文件"""
         self.downloader.cleanup(ev.local_path)
         logger.info(f"[Workflow] 处理完成: {ev.oss_key}")
 
@@ -210,7 +258,11 @@ class DocumentProcessingWorkflow(Workflow):
             chunks_count=ev.nodes_count,
             vectors_stored=ev.vectors_stored
         )
-        return StopEvent(result=result.to_dict())
+        # 添加知识图谱信息
+        result_dict = result.to_dict()
+        result_dict["kg_entities"] = ev.kg_entities
+        result_dict["kg_relations"] = ev.kg_relations
+        return StopEvent(result=result_dict)
 
     @step
     async def cleanup_failed(self, ctx: Context, ev: FailedEvent) -> StopEvent:
