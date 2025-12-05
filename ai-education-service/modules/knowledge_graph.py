@@ -348,6 +348,95 @@ class KnowledgeGraphStore:
 
     # ============ 删除操作 ============
 
+
+    # ============ 资源关系操作 ============
+
+    async def add_book_resource_relation(self, book_id: str, resource_id: str, 
+                                         book_name: str = None, resource_name: str = None) -> bool:
+        """建立教材与学习资源的关系 (BOOK_HAS_RESOURCE)"""
+        async with self.driver.session() as session:
+            # 确保 Book 节点存在
+            await session.run(
+                """
+                MERGE (b:Book {id: $book_id})
+                SET b.name = COALESCE($book_name, b.name, $book_id)
+                SET b.type = 'Book'
+                """,
+                book_id=book_id, book_name=book_name
+            )
+            
+            # 确保 Resource 节点存在
+            await session.run(
+                """
+                MERGE (r:Resource {id: $resource_id})
+                SET r.name = COALESCE($resource_name, r.name, $resource_id)
+                SET r.type = 'Resource'
+                SET r.book_id = $book_id
+                """,
+                resource_id=resource_id, resource_name=resource_name, book_id=book_id
+            )
+            
+            # 建立关系
+            result = await session.run(
+                """
+                MATCH (b:Book {id: $book_id})
+                MATCH (r:Resource {id: $resource_id})
+                MERGE (b)-[rel:HAS_RESOURCE]->(r)
+                SET rel.created_at = datetime()
+                RETURN count(rel) as count
+                """,
+                book_id=book_id, resource_id=resource_id
+            )
+            record = await result.single()
+            success = record["count"] > 0
+            if success:
+                logger.info(f"建立教材-资源关系: {book_id} -> {resource_id}")
+            return success
+
+    async def link_resource_to_chapter(self, resource_id: str, chapter_entity_id: str,
+                                       relation_type: str = "RELATES_TO") -> bool:
+        """将学习资源关联到教材章节实体"""
+        async with self.driver.session() as session:
+            result = await session.run(
+                """
+                MATCH (r:Resource {id: $resource_id})
+                MATCH (c:Entity {id: $chapter_id})
+                MERGE (r)-[rel:RELATES {type: $rel_type}]->(c)
+                SET rel.created_at = datetime()
+                RETURN count(rel) as count
+                """,
+                resource_id=resource_id, chapter_id=chapter_entity_id, rel_type=relation_type
+            )
+            record = await result.single()
+            return record["count"] > 0
+
+    async def get_book_resources(self, book_id: str) -> List[Dict]:
+        """获取教材的所有学习资源"""
+        async with self.driver.session() as session:
+            result = await session.run(
+                """
+                MATCH (b:Book {id: $book_id})-[:HAS_RESOURCE]->(r:Resource)
+                RETURN r
+                """,
+                book_id=book_id
+            )
+            records = await result.data()
+            return [dict(r["r"]) for r in records]
+
+    async def get_resource_related_entities(self, resource_id: str) -> List[Dict]:
+        """获取学习资源关联的教材实体"""
+        async with self.driver.session() as session:
+            result = await session.run(
+                """
+                MATCH (r:Resource {id: $resource_id})-[rel:RELATES]->(e:Entity)
+                RETURN e, rel.type as relation_type
+                """,
+                resource_id=resource_id
+            )
+            records = await result.data()
+            return [{"entity": dict(r["e"]), "relation": r["relation_type"]} for r in records]
+
+
     async def delete_by_book(self, book_id: str) -> int:
         """删除某本书的所有实体和关系"""
         async with self.driver.session() as session:

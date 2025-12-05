@@ -183,10 +183,6 @@ class ChatRequest(BaseModel):
         None,
         description="教材 ID，用于上下文隔离"
     )
-    book_name: Optional[str] = Field(
-        None,
-        description="教材名称，用于AI上下文感知和进度显示"
-    )
     top_k: int = Field(
         5,
         description="检索的参考文档数量",

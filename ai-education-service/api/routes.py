@@ -906,6 +906,7 @@ async def agentic_chat_stream(request: ChatRequest):
                 history=history,
                 user_id=request.user_id,
                 book_id=request.book_id,
+                book_name=request.book_name,
                 filter_expr=filter_expr
             )
 

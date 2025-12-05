@@ -201,3 +201,114 @@ async def extract_and_save(chunks: List[Dict], book_id: str) -> Dict[str, Any]:
         "extracted": {"entities": len(result.entities), "relations": len(result.relations)},
         "saved": save_result
     }
+
+async def analyze_resource_chapter_relations(chunks: List[Dict], book_id: str, 
+                                              resource_id: str, resource_name: str = None) -> Dict[str, Any]:
+    """
+    分析学习资源与教材章节的关联
+    
+    1. 建立 BOOK_HAS_RESOURCE 关系
+    2. 使用 LLM 分析资源内容与教材章节的关联
+    3. 建立 RELATES_TO 关系
+    """
+    from .knowledge_graph import get_kg_store
+    
+    result = {
+        "book_resource_relation": False,
+        "chapter_relations": [],
+        "entities_extracted": 0,
+        "relations_extracted": 0
+    }
+    
+    try:
+        store = await get_kg_store()
+        
+        # 1. 建立教材-资源关系
+        result["book_resource_relation"] = await store.add_book_resource_relation(
+            book_id=book_id,
+            resource_id=resource_id,
+            resource_name=resource_name
+        )
+        
+        # 2. 获取教材的章节实体
+        book_entities = await store.search_entities(query="", book_id=book_id, limit=50)
+        chapter_entities = [e for e in book_entities if e.get("type") in ["Chapter", "Concept", "Topic"]]
+        
+        if not chapter_entities or not chunks:
+            logger.info(f"无章节实体或无内容块，跳过关联分析")
+            return result
+        
+        # 3. 使用 LLM 分析关联
+        extractor = EntityExtractor()
+        
+        # 合并资源内容
+        resource_text = "\n".join([c.get("text", "")[:500] for c in chunks[:5]])
+        chapter_names = [e.get("name", "") for e in chapter_entities[:20]]
+        
+        prompt = f"""分析以下学习资源内容与教材章节的关联。
+
+学习资源内容摘要:
+{resource_text[:2000]}
+
+教材章节列表:
+{', '.join(chapter_names)}
+
+请返回 JSON 格式，指出资源与哪些章节相关:
+{{
+  "related_chapters": [
+    {{"chapter_name": "章节名", "relevance": "high|medium|low", "reason": "关联原因"}}
+  ]
+}}
+
+只返回确实相关的章节，不要强行关联。"""
+
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.post(
+                    f"{settings.OPENROUTER_BASE_URL}/chat/completions",
+                    headers={"Authorization": f"Bearer {settings.OPENROUTER_API_KEY}"},
+                    json={
+                        "model": settings.CHAT_MODEL,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "temperature": 0.1
+                    }
+                )
+                llm_result = response.json()["choices"][0]["message"]["content"]
+                
+                if "```" in llm_result:
+                    llm_result = llm_result.split("```")[1].replace("json", "").strip()
+                parsed = json.loads(llm_result)
+                
+                # 4. 建立关联关系
+                for rel in parsed.get("related_chapters", []):
+                    chapter_name = rel.get("chapter_name", "")
+                    # 找到对应的章节实体
+                    matching = [e for e in chapter_entities if chapter_name in e.get("name", "")]
+                    if matching:
+                        chapter_entity = matching[0]
+                        success = await store.link_resource_to_chapter(
+                            resource_id=resource_id,
+                            chapter_entity_id=chapter_entity.get("id"),
+                            relation_type=f"RELATES_TO_{rel.get('relevance', 'medium').upper()}"
+                        )
+                        if success:
+                            result["chapter_relations"].append({
+                                "chapter": chapter_name,
+                                "relevance": rel.get("relevance"),
+                                "reason": rel.get("reason")
+                            })
+                
+                logger.info(f"资源-章节关联分析完成: {len(result['chapter_relations'])} 个关联")
+                
+        except Exception as e:
+            logger.warning(f"LLM 关联分析失败: {e}")
+        
+        # 5. 同时提取资源中的实体
+        extraction_result = await extract_and_save(chunks, book_id)
+        result["entities_extracted"] = extraction_result.get("saved", {}).get("entities", 0)
+        result["relations_extracted"] = extraction_result.get("saved", {}).get("relations", 0)
+        
+    except Exception as e:
+        logger.error(f"资源关联分析失败: {e}")
+    
+    return result
