@@ -12,7 +12,7 @@ from dataclasses import dataclass
 import httpx
 
 from config import settings
-from .knowledge_graph import Entity, Relation, get_kg_store
+from .knowledge_graph import Entity, Relation, Chapter, ResourceSection, get_kg_store
 
 logger = logging.getLogger(__name__)
 
@@ -181,6 +181,7 @@ class EntityExtractor:
 
     async def save_to_neo4j(self, result: ExtractionResult) -> Dict[str, int]:
         """将提取结果保存到 Neo4j"""
+        store = None
         try:
             store = await get_kg_store()
             entity_count = await store.add_entities_batch(result.entities)
@@ -190,6 +191,9 @@ class EntityExtractor:
         except Exception as e:
             logger.error(f"Neo4j 保存失败: {e}")
             return {"entities": 0, "relations": 0, "error": str(e)}
+        finally:
+            if store:
+                await store.close()
 
 
 async def extract_and_save(chunks: List[Dict], book_id: str) -> Dict[str, Any]:
@@ -219,7 +223,8 @@ async def analyze_resource_chapter_relations(chunks: List[Dict], book_id: str,
         "entities_extracted": 0,
         "relations_extracted": 0
     }
-    
+
+    store = None
     try:
         store = await get_kg_store()
         
@@ -310,5 +315,452 @@ async def analyze_resource_chapter_relations(chunks: List[Dict], book_id: str,
         
     except Exception as e:
         logger.error(f"资源关联分析失败: {e}")
-    
+    finally:
+        if store:
+            await store.close()
+
+    return result
+
+
+async def extract_book_chapters(toc_text: str, book_id: str) -> List[Chapter]:
+    """
+    从教材目录文本中提取章节结构
+
+    Args:
+        toc_text: 目录文本（可以是 OCR 提取的目录页，或手动输入的目录）
+        book_id: 教材 ID
+
+    Returns:
+        章节列表（带层级关系）
+    """
+    prompt = f"""从以下教材目录中提取章节结构。
+
+目录内容:
+{toc_text[:3000]}
+
+请返回 JSON 格式的章节结构:
+{{
+  "chapters": [
+    {{
+      "title": "第1章 绪论",
+      "level": 1,
+      "order": 1,
+      "start_page": 1,
+      "children": [
+        {{
+          "title": "1.1 背景介绍",
+          "level": 2,
+          "order": 1,
+          "start_page": 2,
+          "children": []
+        }}
+      ]
+    }}
+  ]
+}}
+
+注意:
+- level: 1=章, 2=节, 3=小节
+- order: 同级别内的顺序
+- start_page: 起始页码（如果有的话，没有则为 null）
+- children: 子章节列表"""
+
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                f"{settings.OPENROUTER_BASE_URL}/chat/completions",
+                headers={"Authorization": f"Bearer {settings.OPENROUTER_API_KEY}"},
+                json={
+                    "model": settings.CHAT_MODEL,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0.1
+                }
+            )
+            result = response.json()["choices"][0]["message"]["content"]
+
+            if "```" in result:
+                result = result.split("```")[1].replace("json", "").strip()
+            parsed = json.loads(result)
+
+            # 递归转换为 Chapter 对象
+            chapters = []
+
+            def process_chapter(ch_data: Dict, parent_id: str = None, global_order: List[int] = None):
+                if global_order is None:
+                    global_order = [0]
+
+                global_order[0] += 1
+                chapter_id = hashlib.md5(f"{book_id}:{ch_data['title']}".encode()).hexdigest()[:16]
+
+                chapter = Chapter(
+                    id=chapter_id,
+                    book_id=book_id,
+                    title=ch_data.get("title", ""),
+                    order_index=global_order[0],
+                    level=ch_data.get("level", 1),
+                    parent_id=parent_id,
+                    start_page=ch_data.get("start_page"),
+                    end_page=None
+                )
+                chapters.append(chapter)
+
+                # 处理子章节
+                for child in ch_data.get("children", []):
+                    process_chapter(child, chapter_id, global_order)
+
+            for ch in parsed.get("chapters", []):
+                process_chapter(ch)
+
+            logger.info(f"从目录提取了 {len(chapters)} 个章节")
+            return chapters
+
+    except Exception as e:
+        logger.error(f"章节提取失败: {e}")
+        return []
+
+
+async def save_book_chapters(chapters: List[Chapter], book_id: str) -> Dict[str, Any]:
+    """
+    保存章节到 Neo4j 并构建层级关系
+    """
+    store = None
+    try:
+        store = await get_kg_store()
+
+        # 1. 批量添加章节节点
+        count = await store.add_chapters_batch(chapters)
+
+        # 2. 构建层级关系
+        hierarchy_count = await store.build_chapter_hierarchy(book_id)
+
+        logger.info(f"保存章节完成: {count} 个节点, {hierarchy_count} 个层级关系")
+        return {"chapters": count, "hierarchy_relations": hierarchy_count}
+
+    except Exception as e:
+        logger.error(f"保存章节失败: {e}")
+        return {"chapters": 0, "hierarchy_relations": 0, "error": str(e)}
+    finally:
+        if store:
+            await store.close()
+
+
+async def analyze_resource_to_chapters(chunks: List[Dict], book_id: str,
+                                       resource_id: str, resource_name: str = None) -> Dict[str, Any]:
+    """
+    分析学习资源与教材章节的关联（使用新的 Chapter 节点）
+
+    1. 建立 BOOK_HAS_RESOURCE 关系
+    2. 获取教材的章节结构
+    3. 使用 LLM 分析资源内容与章节的关联
+    4. 建立 RELATES_TO_CHAPTER 关系
+    """
+    result = {
+        "book_resource_relation": False,
+        "chapter_relations": [],
+        "unlinked": False
+    }
+
+    store = None
+    try:
+        store = await get_kg_store()
+
+        # 1. 建立教材-资源关系
+        result["book_resource_relation"] = await store.add_book_resource_relation(
+            book_id=book_id,
+            resource_id=resource_id,
+            resource_name=resource_name
+        )
+
+        # 2. 获取教材的章节
+        chapters = await store.get_book_chapters(book_id)
+
+        if not chapters:
+            logger.info(f"教材 {book_id} 无章节，资源将作为未关联资源")
+            result["unlinked"] = True
+            return result
+
+        if not chunks:
+            logger.info(f"资源无内容块，跳过关联分析")
+            result["unlinked"] = True
+            return result
+
+        # 3. 使用 LLM 分析关联
+        resource_text = "\n".join([c.get("text", "")[:500] for c in chunks[:5]])
+        chapter_list = [f"[{c['id'][:8]}] {c['title']}" for c in chapters[:30]]
+
+        prompt = f"""分析以下学习资源内容与教材章节的关联。
+
+学习资源内容摘要:
+{resource_text[:2000]}
+
+教材章节列表（格式: [ID] 章节名）:
+{chr(10).join(chapter_list)}
+
+请返回 JSON 格式，指出资源与哪些章节相关:
+{{
+  "related_chapters": [
+    {{"chapter_id": "章节ID前8位", "chapter_title": "章节名", "relevance": "high|medium|low", "reason": "关联原因"}}
+  ]
+}}
+
+注意:
+- 只返回确实相关的章节，不要强行关联
+- 如果资源内容与所有章节都无关，返回空数组
+- chapter_id 使用方括号中的 ID"""
+
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.post(
+                    f"{settings.OPENROUTER_BASE_URL}/chat/completions",
+                    headers={"Authorization": f"Bearer {settings.OPENROUTER_API_KEY}"},
+                    json={
+                        "model": settings.CHAT_MODEL,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "temperature": 0.1
+                    }
+                )
+                llm_result = response.json()["choices"][0]["message"]["content"]
+
+                if "```" in llm_result:
+                    llm_result = llm_result.split("```")[1].replace("json", "").strip()
+                parsed = json.loads(llm_result)
+
+                # 4. 建立关联关系
+                related = parsed.get("related_chapters", [])
+
+                if not related:
+                    result["unlinked"] = True
+                    logger.info(f"资源 {resource_id} 与章节无关联，保持为未关联状态")
+                else:
+                    # 找到完整的 chapter_id
+                    chapter_ids = []
+                    for rel in related:
+                        short_id = rel.get("chapter_id", "")
+                        matching = [c for c in chapters if c["id"].startswith(short_id)]
+                        if matching:
+                            chapter_ids.append(matching[0]["id"])
+                            result["chapter_relations"].append({
+                                "chapter_id": matching[0]["id"],
+                                "chapter_title": matching[0]["title"],
+                                "relevance": rel.get("relevance"),
+                                "reason": rel.get("reason")
+                            })
+
+                    # 批量建立关联
+                    if chapter_ids:
+                        await store.link_resource_to_chapters_batch(resource_id, chapter_ids)
+
+                logger.info(f"资源-章节关联分析完成: {len(result['chapter_relations'])} 个关联")
+
+        except Exception as e:
+            logger.warning(f"LLM 关联分析失败: {e}")
+            result["unlinked"] = True
+
+    except Exception as e:
+        logger.error(f"资源关联分析失败: {e}")
+    finally:
+        if store:
+            await store.close()
+
+    return result
+
+
+async def extract_resource_sections(chunks: List[Dict], resource_id: str) -> List[ResourceSection]:
+    """
+    从学习资料中提取结构部分
+
+    Args:
+        chunks: 文档块列表
+        resource_id: 资料 ID
+
+    Returns:
+        资料结构部分列表
+    """
+    # 合并文本用于分析
+    full_text = "\n".join([c.get("text", "")[:1000] for c in chunks[:15]])
+
+    prompt = f"""分析以下学习资料的内容结构，提取主要的知识部分/章节/主题。
+
+资料内容:
+{full_text[:4000]}
+
+请返回 JSON 格式的结构:
+{{
+  "sections": [
+    {{
+      "title": "部分标题/主题名称",
+      "order": 1,
+      "summary": "该部分的简要内容描述（50字以内）"
+    }}
+  ]
+}}
+
+注意:
+- 提取资料中的主要知识点/章节/主题
+- 每个部分应该是一个独立的知识单元
+- 最多提取 10 个部分
+- 如果资料没有明显结构，按内容主题划分"""
+
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                f"{settings.OPENROUTER_BASE_URL}/chat/completions",
+                headers={"Authorization": f"Bearer {settings.OPENROUTER_API_KEY}"},
+                json={
+                    "model": settings.CHAT_MODEL,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0.1
+                }
+            )
+            result = response.json()["choices"][0]["message"]["content"]
+
+            if "```" in result:
+                result = result.split("```")[1].replace("json", "").strip()
+            parsed = json.loads(result)
+
+            sections = []
+            for sec in parsed.get("sections", []):
+                section_id = hashlib.md5(f"{resource_id}:{sec['title']}".encode()).hexdigest()[:16]
+                sections.append(ResourceSection(
+                    id=section_id,
+                    resource_id=resource_id,
+                    title=sec.get("title", ""),
+                    order_index=sec.get("order", len(sections) + 1),
+                    content_summary=sec.get("summary"),
+                    parent_id=None
+                ))
+
+            logger.info(f"从资料提取了 {len(sections)} 个结构部分")
+            return sections
+
+    except Exception as e:
+        logger.error(f"资料结构提取失败: {e}")
+        return []
+
+
+async def analyze_sections_to_chapters(sections: List[ResourceSection], book_id: str,
+                                       resource_id: str) -> Dict[str, Any]:
+    """
+    分析资料结构部分与教材章节的关联
+
+    Returns:
+        {"section_chapter_links": [{"section_id": "xxx", "chapter_id": "yyy", "chapter_title": "zzz"}], ...}
+    """
+    result = {
+        "sections_saved": 0,
+        "section_chapter_links": [],
+        "unlinked_sections": []
+    }
+
+    if not sections:
+        return result
+
+    store = None
+    try:
+        store = await get_kg_store()
+
+        # 1. 保存资料结构节点
+        count = await store.add_resource_sections_batch(sections)
+        result["sections_saved"] = count
+
+        # 2. 构建 Resource -> Section 关系
+        await store.build_resource_structure(resource_id)
+
+        # 3. 获取教材章节
+        chapters = await store.get_book_chapters(book_id)
+
+        if not chapters:
+            logger.info(f"教材 {book_id} 无章节，资料结构将不关联")
+            result["unlinked_sections"] = [s.title for s in sections]
+            return result
+
+        # 4. 使用 LLM 分析每个资料部分与章节的关联
+        section_titles = [f"[{s.id[:8]}] {s.title}" for s in sections]
+        chapter_list = [f"[{c['id'][:8]}] {c['title']}" for c in chapters[:30]]
+
+        prompt = f"""分析学习资料的各部分与教材章节的对应关系。
+
+学习资料结构（格式: [ID] 部分名称）:
+{chr(10).join(section_titles)}
+
+教材章节列表（格式: [ID] 章节名）:
+{chr(10).join(chapter_list)}
+
+请返回 JSON 格式，指出每个资料部分对应哪个教材章节:
+{{
+  "mappings": [
+    {{"section_id": "资料部分ID前8位", "chapter_id": "章节ID前8位", "reason": "关联原因"}}
+  ]
+}}
+
+注意:
+- 只返回确实相关的对应关系
+- 一个资料部分可以对应多个章节
+- 如果某部分与所有章节都无关，不要返回该部分"""
+
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.post(
+                    f"{settings.OPENROUTER_BASE_URL}/chat/completions",
+                    headers={"Authorization": f"Bearer {settings.OPENROUTER_API_KEY}"},
+                    json={
+                        "model": settings.CHAT_MODEL,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "temperature": 0.1
+                    }
+                )
+                llm_result = response.json()["choices"][0]["message"]["content"]
+
+                if "```" in llm_result:
+                    llm_result = llm_result.split("```")[1].replace("json", "").strip()
+                parsed = json.loads(llm_result)
+
+                # 5. 建立关联关系
+                links = []
+                linked_section_ids = set()
+
+                for mapping in parsed.get("mappings", []):
+                    sec_short_id = mapping.get("section_id", "")
+                    ch_short_id = mapping.get("chapter_id", "")
+
+                    # 找到完整 ID
+                    matching_section = [s for s in sections if s.id.startswith(sec_short_id)]
+                    matching_chapter = [c for c in chapters if c["id"].startswith(ch_short_id)]
+
+                    if matching_section and matching_chapter:
+                        section = matching_section[0]
+                        chapter = matching_chapter[0]
+                        links.append({
+                            "section_id": section.id,
+                            "chapter_id": chapter["id"]
+                        })
+                        linked_section_ids.add(section.id)
+                        result["section_chapter_links"].append({
+                            "section_id": section.id,
+                            "section_title": section.title,
+                            "chapter_id": chapter["id"],
+                            "chapter_title": chapter["title"]
+                        })
+
+                # 批量建立关联
+                if links:
+                    await store.link_sections_to_chapters_batch(links)
+
+                # 记录未关联的部分
+                for s in sections:
+                    if s.id not in linked_section_ids:
+                        result["unlinked_sections"].append(s.title)
+
+                logger.info(f"资料结构-章节关联完成: {len(links)} 个关联, {len(result['unlinked_sections'])} 个未关联")
+
+        except Exception as e:
+            logger.warning(f"LLM 结构关联分析失败: {e}")
+            result["unlinked_sections"] = [s.title for s in sections]
+
+    except Exception as e:
+        logger.error(f"资料结构关联失败: {e}")
+    finally:
+        if store:
+            await store.close()
+
     return result

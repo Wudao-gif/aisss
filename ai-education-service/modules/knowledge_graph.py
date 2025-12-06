@@ -35,6 +35,30 @@ class Relation:
     properties: Dict[str, Any] = None
 
 
+@dataclass
+class Chapter:
+    """章节"""
+    id: str
+    book_id: str
+    title: str
+    order_index: int  # 排序索引
+    level: int = 1  # 层级: 1=章, 2=节, 3=小节
+    parent_id: Optional[str] = None  # 父章节ID
+    start_page: Optional[int] = None  # 起始页码
+    end_page: Optional[int] = None  # 结束页码
+
+
+@dataclass
+class ResourceSection:
+    """学习资料的结构部分"""
+    id: str
+    resource_id: str
+    title: str
+    order_index: int  # 排序索引
+    content_summary: Optional[str] = None  # 内容摘要
+    parent_id: Optional[str] = None  # 父部分ID（支持嵌套）
+
+
 class KnowledgeGraphStore:
     """Neo4j 知识图谱存储"""
 
@@ -78,6 +102,13 @@ class KnowledgeGraphStore:
             # 书籍ID索引
             await session.run(
                 "CREATE INDEX entity_book IF NOT EXISTS FOR (e:Entity) ON (e.book_id)"
+            )
+            # 章节索引
+            await session.run(
+                "CREATE INDEX chapter_book IF NOT EXISTS FOR (c:Chapter) ON (c.book_id)"
+            )
+            await session.run(
+                "CREATE INDEX chapter_title IF NOT EXISTS FOR (c:Chapter) ON (c.title)"
             )
             logger.info("Neo4j 索引创建完成")
 
@@ -165,6 +196,241 @@ class KnowledgeGraphStore:
             result = await session.run(cypher, **params)
             records = await result.data()
             return [dict(r["e"]) for r in records]
+
+    # ============ 章节操作 ============
+
+    async def add_chapter(self, chapter: Chapter) -> str:
+        """添加章节节点"""
+        async with self.driver.session() as session:
+            result = await session.run(
+                """
+                MERGE (c:Chapter {id: $id})
+                SET c.book_id = $book_id,
+                    c.title = $title,
+                    c.order_index = $order_index,
+                    c.level = $level,
+                    c.parent_id = $parent_id,
+                    c.start_page = $start_page,
+                    c.end_page = $end_page
+                RETURN c.id as id
+                """,
+                id=chapter.id,
+                book_id=chapter.book_id,
+                title=chapter.title,
+                order_index=chapter.order_index,
+                level=chapter.level,
+                parent_id=chapter.parent_id,
+                start_page=chapter.start_page,
+                end_page=chapter.end_page
+            )
+            record = await result.single()
+            return record["id"]
+
+    async def add_chapters_batch(self, chapters: List[Chapter]) -> int:
+        """批量添加章节"""
+        async with self.driver.session() as session:
+            result = await session.run(
+                """
+                UNWIND $chapters as ch
+                MERGE (c:Chapter {id: ch.id})
+                SET c.book_id = ch.book_id,
+                    c.title = ch.title,
+                    c.order_index = ch.order_index,
+                    c.level = ch.level,
+                    c.parent_id = ch.parent_id,
+                    c.start_page = ch.start_page,
+                    c.end_page = ch.end_page
+                RETURN count(c) as count
+                """,
+                chapters=[{
+                    "id": c.id, "book_id": c.book_id, "title": c.title,
+                    "order_index": c.order_index, "level": c.level,
+                    "parent_id": c.parent_id, "start_page": c.start_page,
+                    "end_page": c.end_page
+                } for c in chapters]
+            )
+            record = await result.single()
+            return record["count"]
+
+    async def build_chapter_hierarchy(self, book_id: str) -> int:
+        """构建章节层级关系 (Book -> Chapter, Chapter -> 子Chapter)"""
+        async with self.driver.session() as session:
+            # 1. Book -> 顶级章节 (HAS_CHAPTER)
+            # 条件：level=1 或 parent_id 为空（NULL、空字符串、不存在）
+            result1 = await session.run(
+                """
+                MATCH (b:Book {id: $book_id})
+                MATCH (c:Chapter {book_id: $book_id})
+                WHERE c.level = 1 OR c.parent_id IS NULL OR c.parent_id = ''
+                MERGE (b)-[:HAS_CHAPTER]->(c)
+                RETURN count(*) as count
+                """,
+                book_id=book_id
+            )
+            record1 = await result1.single()
+            chapter_count = record1["count"] if record1 else 0
+            logger.info(f"构建 Book->Chapter 关系: {chapter_count} 个")
+
+            # 2. 父章节 -> 子章节 (HAS_SECTION)
+            result = await session.run(
+                """
+                MATCH (parent:Chapter {book_id: $book_id})
+                MATCH (child:Chapter {book_id: $book_id})
+                WHERE child.parent_id = parent.id AND child.parent_id IS NOT NULL AND child.parent_id <> ''
+                MERGE (parent)-[:HAS_SECTION]->(child)
+                RETURN count(*) as count
+                """,
+                book_id=book_id
+            )
+            record = await result.single()
+            count = record["count"]
+            logger.info(f"构建章节层级关系: {book_id}, {count} 个父子关系")
+            return count
+
+    async def get_book_chapters(self, book_id: str) -> List[Dict]:
+        """获取教材的所有章节（按层级排序）"""
+        async with self.driver.session() as session:
+            result = await session.run(
+                """
+                MATCH (c:Chapter {book_id: $book_id})
+                RETURN c
+                ORDER BY c.level, c.order_index
+                """,
+                book_id=book_id
+            )
+            records = await result.data()
+            return [dict(r["c"]) for r in records]
+
+    async def get_chapter_tree(self, book_id: str) -> List[Dict]:
+        """获取教材的章节树结构"""
+        chapters = await self.get_book_chapters(book_id)
+
+        # 构建树结构
+        chapter_map = {c["id"]: {**c, "children": []} for c in chapters}
+        root_chapters = []
+
+        for c in chapters:
+            if c.get("parent_id") and c["parent_id"] in chapter_map:
+                chapter_map[c["parent_id"]]["children"].append(chapter_map[c["id"]])
+            else:
+                root_chapters.append(chapter_map[c["id"]])
+
+        return root_chapters
+
+    # ============ 资料结构操作 ============
+
+    async def add_resource_section(self, section: ResourceSection) -> str:
+        """添加资料结构节点"""
+        async with self.driver.session() as session:
+            result = await session.run(
+                """
+                MERGE (s:ResourceSection {id: $id})
+                SET s.resource_id = $resource_id,
+                    s.title = $title,
+                    s.order_index = $order_index,
+                    s.content_summary = $content_summary,
+                    s.parent_id = $parent_id
+                RETURN s.id as id
+                """,
+                id=section.id,
+                resource_id=section.resource_id,
+                title=section.title,
+                order_index=section.order_index,
+                content_summary=section.content_summary,
+                parent_id=section.parent_id
+            )
+            record = await result.single()
+            return record["id"]
+
+    async def add_resource_sections_batch(self, sections: List[ResourceSection]) -> int:
+        """批量添加资料结构节点"""
+        async with self.driver.session() as session:
+            result = await session.run(
+                """
+                UNWIND $sections as sec
+                MERGE (s:ResourceSection {id: sec.id})
+                SET s.resource_id = sec.resource_id,
+                    s.title = sec.title,
+                    s.order_index = sec.order_index,
+                    s.content_summary = sec.content_summary,
+                    s.parent_id = sec.parent_id
+                RETURN count(s) as count
+                """,
+                sections=[{
+                    "id": s.id, "resource_id": s.resource_id, "title": s.title,
+                    "order_index": s.order_index, "content_summary": s.content_summary,
+                    "parent_id": s.parent_id
+                } for s in sections]
+            )
+            record = await result.single()
+            return record["count"]
+
+    async def build_resource_structure(self, resource_id: str) -> int:
+        """构建资料结构关系 (Resource -> ResourceSection)"""
+        async with self.driver.session() as session:
+            # Resource -> ResourceSection (HAS_SECTION)
+            result = await session.run(
+                """
+                MATCH (r:Resource {id: $resource_id})
+                MATCH (s:ResourceSection {resource_id: $resource_id})
+                MERGE (r)-[:HAS_SECTION]->(s)
+                RETURN count(*) as count
+                """,
+                resource_id=resource_id
+            )
+            record = await result.single()
+            count = record["count"] if record else 0
+            logger.info(f"构建 Resource->Section 关系: {count} 个")
+            return count
+
+    async def link_section_to_chapter(self, section_id: str, chapter_id: str) -> bool:
+        """将资料结构部分关联到教材章节"""
+        async with self.driver.session() as session:
+            result = await session.run(
+                """
+                MATCH (s:ResourceSection {id: $section_id})
+                MATCH (c:Chapter {id: $chapter_id})
+                MERGE (s)-[rel:RELATES_TO_CHAPTER]->(c)
+                SET rel.created_at = datetime()
+                RETURN count(rel) as count
+                """,
+                section_id=section_id, chapter_id=chapter_id
+            )
+            record = await result.single()
+            return record["count"] > 0
+
+    async def link_sections_to_chapters_batch(self, links: List[Dict]) -> int:
+        """批量关联资料结构到章节
+        links: [{"section_id": "xxx", "chapter_id": "yyy"}, ...]
+        """
+        async with self.driver.session() as session:
+            result = await session.run(
+                """
+                UNWIND $links as link
+                MATCH (s:ResourceSection {id: link.section_id})
+                MATCH (c:Chapter {id: link.chapter_id})
+                MERGE (s)-[rel:RELATES_TO_CHAPTER]->(c)
+                SET rel.created_at = datetime()
+                RETURN count(rel) as count
+                """,
+                links=links
+            )
+            record = await result.single()
+            return record["count"]
+
+    async def get_resource_sections(self, resource_id: str) -> List[Dict]:
+        """获取资料的所有结构部分"""
+        async with self.driver.session() as session:
+            result = await session.run(
+                """
+                MATCH (s:ResourceSection {resource_id: $resource_id})
+                RETURN s
+                ORDER BY s.order_index
+                """,
+                resource_id=resource_id
+            )
+            records = await result.data()
+            return [dict(r["s"]) for r in records]
 
     # ============ 关系操作 ============
 
@@ -393,22 +659,83 @@ class KnowledgeGraphStore:
                 logger.info(f"建立教材-资源关系: {book_id} -> {resource_id}")
             return success
 
-    async def link_resource_to_chapter(self, resource_id: str, chapter_entity_id: str,
+    async def link_resource_to_chapter(self, resource_id: str, chapter_id: str,
                                        relation_type: str = "RELATES_TO") -> bool:
-        """将学习资源关联到教材章节实体"""
+        """将学习资源关联到章节节点"""
         async with self.driver.session() as session:
             result = await session.run(
                 """
                 MATCH (r:Resource {id: $resource_id})
-                MATCH (c:Entity {id: $chapter_id})
-                MERGE (r)-[rel:RELATES {type: $rel_type}]->(c)
-                SET rel.created_at = datetime()
+                MATCH (c:Chapter {id: $chapter_id})
+                MERGE (r)-[rel:RELATES_TO_CHAPTER]->(c)
+                SET rel.type = $rel_type,
+                    rel.created_at = datetime()
                 RETURN count(rel) as count
                 """,
-                resource_id=resource_id, chapter_id=chapter_entity_id, rel_type=relation_type
+                resource_id=resource_id, chapter_id=chapter_id, rel_type=relation_type
             )
             record = await result.single()
             return record["count"] > 0
+
+    async def link_resource_to_chapters_batch(self, resource_id: str, chapter_ids: List[str],
+                                              relation_type: str = "RELATES_TO") -> int:
+        """批量将学习资源关联到多个章节"""
+        async with self.driver.session() as session:
+            result = await session.run(
+                """
+                MATCH (r:Resource {id: $resource_id})
+                UNWIND $chapter_ids as ch_id
+                MATCH (c:Chapter {id: ch_id})
+                MERGE (r)-[rel:RELATES_TO_CHAPTER]->(c)
+                SET rel.type = $rel_type,
+                    rel.created_at = datetime()
+                RETURN count(rel) as count
+                """,
+                resource_id=resource_id, chapter_ids=chapter_ids, rel_type=relation_type
+            )
+            record = await result.single()
+            return record["count"]
+
+    async def get_chapter_resources(self, chapter_id: str) -> List[Dict]:
+        """获取章节关联的所有学习资源"""
+        async with self.driver.session() as session:
+            result = await session.run(
+                """
+                MATCH (r:Resource)-[:RELATES_TO_CHAPTER]->(c:Chapter {id: $chapter_id})
+                RETURN r
+                """,
+                chapter_id=chapter_id
+            )
+            records = await result.data()
+            return [dict(r["r"]) for r in records]
+
+    async def get_resource_chapters(self, resource_id: str) -> List[Dict]:
+        """获取学习资源关联的所有章节"""
+        async with self.driver.session() as session:
+            result = await session.run(
+                """
+                MATCH (r:Resource {id: $resource_id})-[:RELATES_TO_CHAPTER]->(c:Chapter)
+                RETURN c
+                ORDER BY c.level, c.order_index
+                """,
+                resource_id=resource_id
+            )
+            records = await result.data()
+            return [dict(r["c"]) for r in records]
+
+    async def get_unlinked_resources(self, book_id: str) -> List[Dict]:
+        """获取教材下未关联到任何章节的学习资源"""
+        async with self.driver.session() as session:
+            result = await session.run(
+                """
+                MATCH (b:Book {id: $book_id})-[:HAS_RESOURCE]->(r:Resource)
+                WHERE NOT (r)-[:RELATES_TO_CHAPTER]->(:Chapter)
+                RETURN r
+                """,
+                book_id=book_id
+            )
+            records = await result.data()
+            return [dict(r["r"]) for r in records]
 
     async def get_book_resources(self, book_id: str) -> List[Dict]:
         """获取教材的所有学习资源"""
@@ -454,15 +781,16 @@ class KnowledgeGraphStore:
             return count
 
 
-# ============ 单例 ============
-
-_kg_store: Optional[KnowledgeGraphStore] = None
-
+# ============ 工厂函数 ============
 
 async def get_kg_store() -> KnowledgeGraphStore:
-    """获取知识图谱存储单例"""
-    global _kg_store
-    if _kg_store is None:
-        _kg_store = KnowledgeGraphStore()
-        await _kg_store.initialize()
-    return _kg_store
+    """
+    获取知识图谱存储实例
+
+    注意：由于后台任务在新的事件循环中运行，
+    Neo4j AsyncDriver 不能跨事件循环共享，
+    因此每次调用都创建新实例。
+    """
+    kg_store = KnowledgeGraphStore()
+    await kg_store.initialize()
+    return kg_store

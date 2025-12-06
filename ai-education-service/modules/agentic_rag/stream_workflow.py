@@ -30,6 +30,7 @@ from .events import (
     SynthesizeEvent,
 )
 from .tools import ToolRegistry, VectorSearchTool, CalculatorTool, KnowledgeGraphTool
+from .query_transform import get_query_transformer
 
 logger = logging.getLogger(__name__)
 
@@ -92,20 +93,53 @@ class AgenticStreamWorkflow(Workflow):
 
     @step
     async def route(self, ctx: Context, ev: StartEvent) -> RouteDecisionEvent | StopEvent:
-        """步骤1: 路由决策"""
+        """步骤1: 路由决策 + HyDE 查询转换"""
         query = ev.query
         history = getattr(ev, 'history', None) or []
+        book_name = getattr(ev, 'book_name', None)
+
+        # 存储 book_name 供后续步骤使用
+        await ctx.store.set("book_name", book_name)
+
+        # 构建进度消息
+        if book_name:
+            progress_msg = f"🎯 正在分析您关于《{book_name}》的问题..."
+        else:
+            progress_msg = "🤔 正在分析您的问题..."
 
         # 发送进度事件
         ctx.write_event_to_stream(ProgressEvent(
             progress_type=ProgressType.ROUTING,
-            message="🤔 正在分析您的问题...",
+            message=progress_msg,
             detail=f"问题: {query[:50]}..."
         ))
 
+        # ========== 使用 HyDE 进行查询转换 ==========
+        ctx.write_event_to_stream(ProgressEvent(
+            progress_type=ProgressType.ROUTING,
+            message="🔄 正在优化查询（HyDE）..."
+        ))
+
+        try:
+            query_transformer = get_query_transformer()
+            hyde_result = query_transformer.transform_with_hyde(query)
+            # 获取用于检索的字符串（包含假设性文档）
+            hyde_queries = query_transformer.get_embedding_strings(hyde_result)
+            await ctx.store.set("hyde_queries", hyde_queries)
+
+            ctx.write_event_to_stream(ProgressEvent(
+                progress_type=ProgressType.ROUTING,
+                message=f"✅ 查询优化完成，生成 {len(hyde_queries)} 个检索向量"
+            ))
+            logger.info(f"HyDE 转换: 原始查询 -> {len(hyde_queries)} 个检索字符串")
+        except Exception as e:
+            logger.warning(f"HyDE 转换失败，使用原始查询: {e}")
+            await ctx.store.set("hyde_queries", [query])
+
+        # ========== 路由决策 ==========
         route_prompt = f"""分析问题类型（返回JSON）:
 问题: {query}
-{{"type": "simple|complex|clarify|chitchat", "reasoning": "理由", "rewritten_query": "改写查询"}}"""
+{{"type": "simple|complex|clarify|chitchat", "reasoning": "理由"}}"""
 
         try:
             result = await self._call_llm([{"role": "user", "content": route_prompt}])
@@ -139,7 +173,7 @@ class AgenticStreamWorkflow(Workflow):
             return RouteDecisionEvent(
                 query=query, query_type=query_type,
                 reasoning=parsed.get("reasoning", ""),
-                rewritten_query=parsed.get("rewritten_query", query),
+                rewritten_query=query,  # 使用原始查询，HyDE 结果存在 ctx.store
                 history=history,
                 filter_expr=getattr(ev, 'filter_expr', None)
             )
@@ -153,7 +187,7 @@ class AgenticStreamWorkflow(Workflow):
 
     @step
     async def plan(self, ctx: Context, ev: RouteDecisionEvent | RetryEvent) -> ToolCallEvent:
-        """步骤2: 任务规划"""
+        """步骤2: 任务规划（使用 HyDE 优化后的查询）"""
         if isinstance(ev, RetryEvent):
             query, retry_count = ev.query, ev.retry_count
             filter_expr, history = ev.filter_expr, ev.history
@@ -161,18 +195,30 @@ class AgenticStreamWorkflow(Workflow):
                 progress_type=ProgressType.RETRYING,
                 message=f"🔄 第 {retry_count} 次重试: {ev.suggestions[:30]}..."
             ))
+            # 重试时重新获取 HyDE 查询
+            hyde_queries = await ctx.store.get("hyde_queries", [query])
         else:
             query = ev.rewritten_query or ev.query
             retry_count, filter_expr, history = 0, ev.filter_expr, ev.history
+            # 获取 HyDE 转换后的查询列表
+            hyde_queries = await ctx.store.get("hyde_queries", [query])
 
             if ev.query_type == QueryType.SIMPLE:
+                # 获取 book_name 用于进度显示
+                book_name = await ctx.store.get("book_name", default=None)
+                if book_name:
+                    search_msg = f"🔍 正在查阅《{book_name}》相关资料（HyDE 优化）..."
+                else:
+                    search_msg = "🔍 正在检索相关资料（HyDE 优化）..."
                 ctx.write_event_to_stream(ProgressEvent(
                     progress_type=ProgressType.SEARCHING,
-                    message="🔍 正在检索相关资料..."
+                    message=search_msg
                 ))
+                # 使用 HyDE 查询进行检索（使用第一个假设性文档）
+                search_query = hyde_queries[0] if hyde_queries else query
                 return ToolCallEvent(
                     query=query, tool_name="vector_search",
-                    tool_args={"query": query, "top_k": 5, "filter_expr": filter_expr},
+                    tool_args={"query": search_query, "top_k": 5, "filter_expr": filter_expr},
                     subtask_id="simple", history=history
                 )
 
@@ -270,8 +316,13 @@ class AgenticStreamWorkflow(Workflow):
                     subtask_id=next_task.id, plan=plan, history=ev.history)
 
         # 反思评估
+        book_name = await ctx.get("book_name", default=None)
+        if book_name:
+            reflect_msg = f"🧐 正在评估《{book_name}》的检索结果..."
+        else:
+            reflect_msg = "🧐 正在评估检索结果..."
         ctx.write_event_to_stream(ProgressEvent(
-            progress_type=ProgressType.REFLECTING, message="🧐 正在评估检索结果..."
+            progress_type=ProgressType.REFLECTING, message=reflect_msg
         ))
 
         context, sources = self._build_context(all_results)
@@ -322,8 +373,13 @@ class AgenticStreamWorkflow(Workflow):
     @step
     async def synthesize(self, ctx: Context, ev: SynthesizeEvent) -> StopEvent:
         """步骤5: 流式生成答案"""
+        book_name = await ctx.get("book_name", default=None)
+        if book_name:
+            synth_msg = f"✨ 正在基于《{book_name}》生成答案..."
+        else:
+            synth_msg = "✨ 正在生成答案..."
         ctx.write_event_to_stream(ProgressEvent(
-            progress_type=ProgressType.SYNTHESIZING, message="✨ 正在生成答案..."
+            progress_type=ProgressType.SYNTHESIZING, message=synth_msg
         ))
 
         if not ev.context:

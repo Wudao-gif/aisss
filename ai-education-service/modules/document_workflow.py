@@ -128,14 +128,17 @@ class DocumentProcessingWorkflow(Workflow):
         """步骤2: 从 OSS 下载文件"""
         try:
             local_path = self.downloader.download(ev.oss_key)
-            
+
+            # 调试：打印收到的原始 metadata
+            logger.info(f"[Workflow] 收到的原始 metadata: {ev.metadata}")
+
             file_metadata = {
                 "oss_key": ev.oss_key,
                 "bucket": ev.bucket,
                 "file_name": Path(ev.oss_key).name,
                 **ev.metadata
             }
-            
+
             logger.info(f"[Workflow] 文件下载完成: {ev.oss_key} -> {local_path}")
             return DownloadEvent(
                 oss_key=ev.oss_key,
@@ -209,23 +212,101 @@ class DocumentProcessingWorkflow(Workflow):
         kg_entities, kg_relations = 0, 0
 
         try:
-            from .entity_extractor import extract_and_save
-
-            # 从 nodes 提取 book_id
+            # 从 nodes 提取 metadata
+            metadata = {}
             book_id = None
             if ev.nodes:
                 first_node = ev.nodes[0]
-                book_id = first_node.metadata.get("book_id") if hasattr(first_node, 'metadata') else None
+                if hasattr(first_node, 'metadata'):
+                    metadata = first_node.metadata
+                    book_id = metadata.get("book_id")
 
-            if book_id and ev.nodes:
+            # 兼容两种字段名: type/document_type, name/document_name
+            doc_type = metadata.get("document_type") or metadata.get("type")
+            resource_id = metadata.get("resource_id")
+            resource_name = metadata.get("document_name") or metadata.get("name")
+            book_name = metadata.get("book_name")
+
+            # 调试日志
+            logger.info(f"[Workflow] KG metadata: type={doc_type}, book_id={book_id}, resource_id={resource_id}")
+
+            # 处理学习资源：提取结构并关联到章节
+            if doc_type in ["resource", "user_resource"] and book_id and resource_id:
+                from .entity_extractor import (
+                    analyze_resource_to_chapters,
+                    extract_resource_sections,
+                    analyze_sections_to_chapters
+                )
+
+                # 转换 nodes 为 chunks 格式
+                chunks = [{"text": n.get_content(), "metadata": n.metadata} for n in ev.nodes if hasattr(n, 'get_content')]
+
+                # 1. 建立 Book -> Resource 关系
+                result = await analyze_resource_to_chapters(
+                    chunks=chunks,
+                    book_id=book_id,
+                    resource_id=resource_id,
+                    resource_name=resource_name
+                )
+
+                if result.get("book_resource_relation"):
+                    kg_relations = 1
+                    logger.info(f"[Workflow] 建立教材-资源关系: {book_id} -> {resource_id}")
+
+                # 2. 提取资料结构
+                sections = await extract_resource_sections(chunks, resource_id)
+
+                if sections:
+                    logger.info(f"[Workflow] 提取资料结构: {len(sections)} 个部分")
+
+                    # 3. 分析资料结构与章节的关联
+                    section_result = await analyze_sections_to_chapters(sections, book_id, resource_id)
+
+                    sections_saved = section_result.get("sections_saved", 0)
+                    section_links = section_result.get("section_chapter_links", [])
+
+                    kg_entities = sections_saved
+                    kg_relations += len(section_links)
+
+                    if section_links:
+                        logger.info(f"[Workflow] 资料结构关联到 {len(section_links)} 个章节")
+                        for link in section_links[:5]:  # 只打印前5个
+                            logger.info(f"  - {link['section_title']} -> {link['chapter_title']}")
+
+                    unlinked = section_result.get("unlinked_sections", [])
+                    if unlinked:
+                        logger.info(f"[Workflow] {len(unlinked)} 个部分未关联到章节")
+                else:
+                    # 回退到旧逻辑：整体资源关联到章节
+                    chapter_count = len(result.get("chapter_relations", []))
+                    if chapter_count > 0:
+                        kg_relations += chapter_count
+                        logger.info(f"[Workflow] 资源关联到 {chapter_count} 个章节")
+                    elif result.get("unlinked"):
+                        logger.info(f"[Workflow] 资源未匹配到章节，保持为未关联状态")
+
+            # 处理教材：提取章节结构和实体关系
+            elif book_id and ev.nodes:
+                from .entity_extractor import extract_and_save, extract_book_chapters, save_book_chapters
+
                 # 转换 nodes 为 chunks 格式
                 chunks = [{"text": n.get_content(), "metadata": n.metadata} for n in ev.nodes if hasattr(n, 'get_content')]
 
                 if chunks:
+                    # 1. 尝试从前几页提取章节结构（目录通常在前面）
+                    toc_text = "\n".join([c.get("text", "")[:2000] for c in chunks[:10]])
+                    chapters = await extract_book_chapters(toc_text, book_id)
+
+                    if chapters:
+                        chapter_result = await save_book_chapters(chapters, book_id)
+                        logger.info(f"[Workflow] 章节结构提取完成: {chapter_result.get('chapters', 0)} 个章节")
+
+                    # 2. 提取实体和关系
                     result = await extract_and_save(chunks, book_id)
                     kg_entities = result.get("saved", {}).get("entities", 0)
                     kg_relations = result.get("saved", {}).get("relations", 0)
                     logger.info(f"[Workflow] 知识图谱提取完成: {kg_entities} 实体, {kg_relations} 关系")
+
         except Exception as e:
             logger.warning(f"[Workflow] 知识图谱提取失败（不影响主流程）: {e}")
 
@@ -284,6 +365,6 @@ def get_document_workflow() -> DocumentProcessingWorkflow:
     """获取 DocumentProcessingWorkflow 单例"""
     global _document_workflow
     if _document_workflow is None:
-        _document_workflow = DocumentProcessingWorkflow(timeout=300, verbose=False)
+        _document_workflow = DocumentProcessingWorkflow(timeout=1200, verbose=False)
     return _document_workflow
 
