@@ -297,8 +297,8 @@ class AgenticStreamWorkflow(Workflow):
     @step
     async def reflect(self, ctx: Context, ev: ToolResultEvent) -> SynthesizeEvent | ToolCallEvent | RetryEvent:
         """步骤4: 反思"""
-        plan = ev.plan or await ctx.store.get("plan")
-        all_results = ev.all_results or await ctx.store.get("all_results", [])
+        plan = ev.plan or await ctx.store.get("plan", default=None)
+        all_results = ev.all_results or await ctx.store.get("all_results", default=[])
         retry_count = plan.retry_count if plan else 0
 
         # 检查是否还有子任务
@@ -316,7 +316,7 @@ class AgenticStreamWorkflow(Workflow):
                     subtask_id=next_task.id, plan=plan, history=ev.history)
 
         # 反思评估
-        book_name = await ctx.get("book_name", default=None)
+        book_name = await ctx.store.get("book_name", default=None)
         if book_name:
             reflect_msg = f"🧐 正在评估《{book_name}》的检索结果..."
         else:
@@ -373,7 +373,7 @@ class AgenticStreamWorkflow(Workflow):
     @step
     async def synthesize(self, ctx: Context, ev: SynthesizeEvent) -> StopEvent:
         """步骤5: 流式生成答案"""
-        book_name = await ctx.get("book_name", default=None)
+        book_name = await ctx.store.get("book_name", default=None)
         if book_name:
             synth_msg = f"✨ 正在基于《{book_name}》生成答案..."
         else:
