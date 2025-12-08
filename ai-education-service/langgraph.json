@@ -1,0 +1,12 @@
+{
+  "$schema": "https://langchain-ai.github.io/langgraph/schemas/langgraph.config.schema.json",
+  "graphs": {
+    "supervisor": "./modules/langgraph/graph.py:create_graph"
+  },
+  "env": ".env",
+  "python_version": "3.11",
+  "dependencies": [
+    "."
+  ]
+}
+

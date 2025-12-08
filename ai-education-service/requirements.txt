@@ -46,3 +46,10 @@ rich
 
 # Neo4j 知识图谱
 neo4j
+
+# PostgreSQL 数据库（用户记忆存储）
+psycopg2-binary
+
+# LangGraph 多智能体
+langgraph
+langchain-core

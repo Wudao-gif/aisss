@@ -1,12 +1,14 @@
 """
 API 路由定义
+
+统一使用 LangGraph 多智能体架构 (v4)
 """
 
 import json
 import logging
 from pathlib import Path
-from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks, Query
-from fastapi.responses import StreamingResponse, HTMLResponse, FileResponse
+from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
+from fastapi.responses import StreamingResponse
 
 from .schemas import (
     ProcessDocumentRequest,
@@ -21,17 +23,8 @@ from .schemas import (
 )
 from .dependencies import verify_api_key
 from modules import ProcessingPipeline, RAGRetriever
-from modules.conversation_memory import get_memory
-from modules.rag_workflow import (
-    RAGWorkflow, RAGStreamWorkflow,
-    get_rag_workflow, get_rag_stream_workflow,
-    generate_workflow_diagram, generate_execution_trace
-)
-from modules.agentic_rag import get_agentic_workflow, get_agentic_stream_workflow, ProgressEvent, ProgressType
-from modules.document_workflow import (
-    DocumentProcessingWorkflow,
-    get_document_workflow
-)
+from modules.document_workflow import get_document_workflow
+from modules.langgraph import run_graph, run_graph_stream
 from config import settings
 
 logger = logging.getLogger(__name__)
@@ -183,68 +176,6 @@ async def process_document_async(
     )
 
 
-@router.post(
-    "/v2/process-document",
-    response_model=ProcessDocumentResponse,
-    summary="处理文档 (Workflow 版本)",
-    description="使用 LlamaIndex Workflows 处理文档，包含知识图谱提取"
-)
-async def process_document_v2(
-    request: ProcessDocumentRequest,
-    _: bool = Depends(verify_api_key)
-):
-    """
-    Workflow 版本的文档处理端点
-
-    使用事件驱动的工作流架构，包含：
-    - 文件验证
-    - OSS 下载
-    - 文档解析和分块
-    - 向量存储
-    - 知识图谱提取（Neo4j）
-    """
-    try:
-        logger.info(f"[Workflow] 收到处理请求: {request.oss_key}")
-
-        workflow = get_document_workflow()
-        result = await workflow.run(
-            oss_key=request.oss_key,
-            bucket=request.bucket,
-            metadata=request.metadata or {}
-        )
-
-        if result.success:
-            return ProcessDocumentResponse(
-                success=True,
-                message=result.message,
-                data={
-                    "status": result.status.value,
-                    "file_key": result.file_key,
-                    "nodes_count": result.nodes_count,
-                    "vectors_stored": result.vectors_stored,
-                    "kg_entities": result.kg_entities,
-                    "kg_relations": result.kg_relations
-                }
-            )
-        else:
-            return ProcessDocumentResponse(
-                success=False,
-                message=result.message,
-                data={
-                    "status": result.status.value,
-                    "file_key": result.file_key,
-                    "error": result.error
-                }
-            )
-
-    except Exception as e:
-        logger.error(f"[Workflow] 处理文档时发生错误: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
-        )
-
-
 # ==================== RAG 检索接口 ====================
 
 @router.post(
@@ -297,181 +228,6 @@ async def search(
         )
 
 
-@router.post(
-    "/chat",
-    response_model=ChatResponse,
-    summary="RAG 问答",
-    description="基于检索增强生成（RAG）的智能问答"
-)
-async def chat(
-    request: ChatRequest,
-    _: bool = Depends(verify_api_key)
-):
-    """
-    RAG 问答端点
-
-    完整的 RAG 流程：
-    1. 根据问题检索相关文档
-    2. 构建上下文
-    3. 调用大模型生成回答
-    """
-    try:
-        logger.info(f"收到问答请求: {request.question[:50]}...")
-
-        retriever = get_retriever()
-
-        # 转换历史对话格式
-        history = None
-        if request.history:
-            history = [{"role": msg.role, "content": msg.content} for msg in request.history]
-
-        # 🔧 最终修正：强制 system_prompt=None，确保引用规则不被覆盖
-        result = await retriever.query(
-            question=request.question,
-            top_k=request.top_k,
-            filter_expr=request.filter_expr,
-            system_prompt=None,  # ← 强制为 None！禁止覆盖引用规则
-            history=history,
-            user_id=request.user_id,
-            book_id=request.book_id
-        )
-
-        # 转换来源为响应格式
-        sources = [
-            SearchResult(
-                id=s["id"],
-                text=s["text"],
-                score=s["score"],
-                metadata=s.get("metadata")
-            )
-            for s in result.get("sources", [])
-        ]
-
-        return ChatResponse(
-            success=True,
-            answer=result["answer"],
-            sources=sources,
-            has_context=result["has_context"]
-        )
-
-    except Exception as e:
-        logger.error(f"问答时发生错误: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
-        )
-
-
-@router.post(
-    "/chat/stream",
-    summary="RAG 流式问答",
-    description="基于检索增强生成（RAG）的智能问答，流式输出，支持多轮对话和长期记忆"
-)
-async def chat_stream(
-    request: ChatRequest,
-    _: bool = Depends(verify_api_key)
-):
-    """
-    RAG 流式问答端点（支持多轮对话 + 长期记忆）
-
-    返回 SSE 格式的流式响应：
-    - event: sources - 检索到的参考来源
-    - event: content - AI 生成的内容片段
-    - event: done - 完成标记
-
-    多轮对话特性：
-    - 懒惰压缩：历史超过阈值时自动生成摘要
-    - 查询改写：解决指代不清问题（如"它"、"这个"）
-    - 上下文隔离：通过 book_id 隔离不同学科的记忆
-    - 长期记忆：摘要存储在 Redis/内存中，Key: summary_{user_id}_{book_id}
-    """
-    try:
-        retriever = get_retriever()
-        memory = get_memory()
-
-        # 转换历史对话格式
-        history = []
-        if request.history:
-            history = [{"role": msg.role, "content": msg.content} for msg in request.history]
-
-        # 获取 user_id 和 book_id（用于长期记忆）
-        user_id = request.user_id or "anonymous"
-        book_id = request.book_id or "default"
-
-        logger.info(f"收到流式问答请求: {request.question[:50]}..., user={user_id}, book={book_id}, 历史: {len(history)} 条")
-
-        # 1. 检查并压缩对话历史（懒惰模式）
-        compressed_history, summary = await memory.check_and_compress(user_id, book_id, history)
-        if summary:
-            logger.info(f"已获取对话摘要，长度: {len(summary)}")
-
-        # 2. 查询改写（结合摘要上下文）
-        rewrite_context = compressed_history.copy()
-        if summary:
-            rewrite_context.insert(0, {"role": "system", "content": f"[之前的对话摘要]: {summary}"})
-        rewritten_query = await retriever.rewrite_query(request.question, rewrite_context)
-
-        # 3. 使用改写后的查询检索相关文档
-        results = retriever.retrieve(
-            query=rewritten_query,
-            top_k=request.top_k,
-            filter_expr=request.filter_expr  # 保留 book_id 过滤，确保不跑题
-        )
-
-        # 4. 构建上下文（带引用标记 [来源X]）
-        # build_context 返回 (context_str, used_results)
-        context, used_results = retriever.build_context(results)
-        has_context = len(used_results) > 0
-
-        # 转换来源为响应格式（使用 used_results，包含 citation_id）
-        sources = [
-            {
-                "id": r["id"],
-                "text": r["text"],
-                "score": r["score"],
-                "metadata": r.get("metadata"),
-                "citation_id": r.get("citation_id", i + 1)  # 引用编号
-            }
-            for i, r in enumerate(used_results)
-        ]
-
-        async def generate():
-            # 先发送 sources
-            yield f"event: sources\ndata: {json.dumps({'sources': sources, 'has_context': has_context}, ensure_ascii=False)}\n\n"
-
-            # 🚨 【修改点】移除 "if not has_context" 的拦截判断
-            # 无论是否有上下文，都调用 generate_answer_stream
-            # 让 LLM 自己根据 System Prompt 决定：是回答"不知道"，还是根据"历史对话"回答
-            async for chunk in retriever.generate_answer_stream(
-                query=request.question,
-                context=context,     # 即使是空字符串也没关系
-                system_prompt=None,  # ← 强制为 None！禁止 API 层覆盖引用规则
-                history=compressed_history,
-                summary=summary      # ← 独立传递，由 retriever 融合到 prompt
-            ):
-                yield f"event: content\ndata: {json.dumps({'content': chunk}, ensure_ascii=False)}\n\n"
-
-            # 发送完成标记
-            yield f"event: done\ndata: {json.dumps({'done': True})}\n\n"
-
-        return StreamingResponse(
-            generate(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no",
-            }
-        )
-
-    except Exception as e:
-        logger.error(f"流式问答时发生错误: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
-        )
-
-
 # ==================== 向量管理接口 ====================
 
 @router.delete(
@@ -509,442 +265,152 @@ async def delete_vectors(
         )
 
 
-# ==================== Workflow 可视化接口 ====================
-
-@router.get(
-    "/workflow/visualize",
-    response_class=HTMLResponse,
-    summary="工作流可视化",
-    description="生成并返回工作流的可视化图表（HTML 格式）"
-)
-async def visualize_workflow(
-    workflow_type: str = Query(
-        default="rag",
-        description="工作流类型: rag, rag_stream, document"
-    ),
-    _: bool = Depends(verify_api_key)
-):
-    """
-    工作流可视化端点
-
-    生成指定工作流的交互式流程图（HTML 格式）。
-
-    支持的工作流类型：
-    - rag: RAG 问答工作流
-    - rag_stream: RAG 流式问答工作流
-    - document: 文档处理工作流
-    """
-    try:
-        workflow_map = {
-            "rag": RAGWorkflow,
-            "rag_stream": RAGStreamWorkflow,
-            "document": DocumentProcessingWorkflow
-        }
-
-        if workflow_type not in workflow_map:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"不支持的工作流类型: {workflow_type}，支持: {list(workflow_map.keys())}"
-            )
-
-        workflow_class = workflow_map[workflow_type]
-        filename = f"workflow_{workflow_type}.html"
-
-        # 生成流程图
-        result_path = generate_workflow_diagram(workflow_class, filename)
-
-        if not result_path or not Path(result_path).exists():
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="生成流程图失败，请确保已安装 llama-index-utils-workflow"
-            )
-
-        # 读取并返回 HTML 内容
-        with open(result_path, "r", encoding="utf-8") as f:
-            html_content = f.read()
-
-        return HTMLResponse(content=html_content)
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"生成工作流可视化时发生错误: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
-        )
-
-
-@router.get(
-    "/workflow/info",
-    summary="工作流信息",
-    description="获取所有可用工作流的信息"
-)
-async def workflow_info(
-    _: bool = Depends(verify_api_key)
-):
-    """
-    获取工作流信息端点
-
-    返回所有可用工作流的描述和步骤信息。
-    """
-    return {
-        "workflows": [
-            {
-                "type": "rag",
-                "name": "RAG 问答工作流",
-                "description": "事件驱动的 RAG 问答流程",
-                "steps": [
-                    "rewrite_query - 查询改写（解决指代问题）",
-                    "retrieve - 向量检索",
-                    "rerank - 重排序（可选）",
-                    "build_context - 构建上下文",
-                    "generate_answer - 生成回答"
-                ]
-            },
-            {
-                "type": "rag_stream",
-                "name": "RAG 流式问答工作流",
-                "description": "支持 SSE 流式输出的 RAG 问答流程",
-                "steps": [
-                    "rewrite_query - 查询改写",
-                    "retrieve - 向量检索",
-                    "rerank - 重排序",
-                    "build_context - 构建上下文",
-                    "prepare_stream - 准备流式生成"
-                ]
-            },
-            {
-                "type": "document",
-                "name": "文档处理工作流",
-                "description": "事件驱动的文档处理流程",
-                "steps": [
-                    "validate - 验证文件类型",
-                    "download - 从 OSS 下载",
-                    "process_document - 解析和分块",
-                    "store_vectors - 存储向量",
-                    "cleanup_success/cleanup_failed - 清理临时文件"
-                ]
-            }
-        ],
-        "visualization_url": "/api/workflow/visualize?workflow_type={type}"
-    }
-
-
-# ==================== Workflow 版本的接口（可选启用）====================
+# ==================== 智能问答接口 (LangGraph 多智能体) ====================
 
 @router.post(
-    "/v2/chat",
+    "/chat",
     response_model=ChatResponse,
-    summary="RAG 问答 (Workflow 版本)",
-    description="使用 LlamaIndex Workflows 实现的 RAG 问答"
+    summary="智能问答",
+    description="基于 LangGraph 多智能体架构的智能问答，支持记忆、混合检索、个性化回答"
 )
-async def chat_v2(
+async def chat(
     request: ChatRequest,
     _: bool = Depends(verify_api_key)
 ):
     """
-    Workflow 版本的 RAG 问答端点
+    智能问答接口（LangGraph 多智能体）
 
-    使用事件驱动的工作流架构，提供更好的可观测性和错误处理。
+    特性：
+    - Supervisor 协调多个专业智能体
+    - Letta 长期记忆（用户画像、知识理解、学习轨迹）
+    - 混合检索（向量 + 知识图谱）
+    - 个性化回答调整
     """
     try:
-        logger.info(f"[Workflow] 收到问答请求: {request.question[:50]}...")
-
-        workflow = get_rag_workflow()
+        logger.info(f"[LangGraph] 收到问答请求: {request.question[:50]}...")
 
         # 转换历史对话格式
         history = None
         if request.history:
             history = [{"role": msg.role, "content": msg.content} for msg in request.history]
 
-        # 运行工作流
-        result = await workflow.run(
+        # 运行 LangGraph
+        result = await run_graph(
             query=request.question,
-            history=history,
-            user_id=request.user_id,
-            book_id=request.book_id,
-            filter_expr=request.filter_expr,
-            top_k=request.top_k
+            user_id=request.user_id or "anonymous",
+            book_id=request.book_id or "default",
+            book_name=request.book_name or "",
+            book_subject="",
+            history=history
         )
 
         # 转换来源为响应格式
         sources = [
             SearchResult(
-                id=s["id"],
-                text=s["text"],
-                score=s["score"],
+                id=f"source-{i}",
+                text=s.get("text", "")[:500],
+                score=s.get("score", 0),
                 metadata=s.get("metadata")
             )
-            for s in result.get("sources", [])
-        ]
-
-        return ChatResponse(
-            success=True,
-            answer=result["answer"],
-            sources=sources,
-            has_context=result["has_context"]
-        )
-
-    except Exception as e:
-        logger.error(f"[Workflow] 问答时发生错误: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
-        )
-
-
-@router.post(
-    "/v2/chat/stream",
-    summary="RAG 流式问答 (Workflow 版本)",
-    description="使用 LlamaIndex Workflows 实现的流式 RAG 问答"
-)
-async def chat_stream_v2(
-    request: ChatRequest,
-    _: bool = Depends(verify_api_key)
-):
-    """
-    Workflow 版本的流式 RAG 问答端点
-
-    使用事件驱动的工作流架构，返回 SSE 格式的流式响应。
-    """
-    try:
-        logger.info(f"[Workflow] 收到流式问答请求: {request.question[:50]}...")
-
-        workflow = get_rag_stream_workflow()
-
-        # 转换历史对话格式
-        history = None
-        if request.history:
-            history = [{"role": msg.role, "content": msg.content} for msg in request.history]
-
-        # 运行工作流获取准备好的数据
-        prep_result = await workflow.run(
-            query=request.question,
-            history=history,
-            user_id=request.user_id,
-            book_id=request.book_id,
-            filter_expr=request.filter_expr,
-            top_k=request.top_k
-        )
-
-        # 提取流式生成所需的数据
-        retriever = prep_result["retriever"]
-        query = prep_result["query"]
-        context = prep_result["context"]
-        sources = prep_result["sources"]
-        history = prep_result["history"]
-        summary = prep_result["summary"]
-        has_context = bool(context)
-
-        # 转换来源格式
-        sources_data = [
-            {
-                "id": s["id"],
-                "text": s["text"],
-                "score": s["score"],
-                "metadata": s.get("metadata"),
-                "citation_id": s.get("citation_id", i + 1)
-            }
-            for i, s in enumerate(sources)
-        ]
-
-        async def generate():
-            # 发送 sources
-            yield f"event: sources\ndata: {json.dumps({'sources': sources_data, 'has_context': has_context}, ensure_ascii=False)}\n\n"
-
-            # 流式生成回答
-            async for chunk in retriever.generate_answer_stream(
-                query=query,
-                context=context,
-                system_prompt=None,
-                history=history,
-                summary=summary
-            ):
-                yield f"event: content\ndata: {json.dumps({'content': chunk}, ensure_ascii=False)}\n\n"
-
-            # 完成标记
-            yield f"event: done\ndata: {json.dumps({'done': True})}\n\n"
-
-        return StreamingResponse(
-            generate(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no",
-            }
-        )
-
-    except Exception as e:
-        logger.error(f"[Workflow] 流式问答时发生错误: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
-        )
-
-
-# ==================== Agentic RAG v3 ====================
-
-@router.post(
-    "/v3/chat",
-    response_model=ChatResponse,
-    summary="Agentic RAG 问答",
-    description="基于智能 Agent 的 RAG 问答，支持动态路由、任务规划、反思重试"
-)
-async def agentic_chat(request: ChatRequest):
-    """
-    Agentic RAG 问答接口
-
-    特性:
-    - 动态路由: 根据问题类型选择处理策略
-    - 任务规划: 复杂问题分解为子任务
-    - 反思循环: 结果不满意时自动重试
-    - 多工具协作: 支持多种检索工具
-    """
-    try:
-        workflow = get_agentic_workflow()
-
-        # 构建 filter_expr
-        filter_expr = request.filter_expr
-        if not filter_expr and request.book_id:
-            filter_expr = f"book_id = '{request.book_id}'"
-
-        # 转换历史格式
-        history = None
-        if request.history:
-            history = [{"role": m.role, "content": m.content} for m in request.history]
-
-        logger.info(f"[Agentic] 收到问题: {request.question[:50]}...")
-
-        # 运行工作流
-        result = await workflow.run(
-            query=request.question,
-            history=history,
-            user_id=request.user_id,
-            book_id=request.book_id,
-            filter_expr=filter_expr,
-            top_k=request.top_k
-        )
-
-        # 转换来源格式
-        sources = [
-            SearchResult(
-                id=s.get("id", ""),
-                text=s.get("text", "")[:500],
-                score=s.get("score", 0.0),
-                metadata=s.get("metadata", "{}")
-            )
-            for s in result.get("sources", [])[:5]
+            for i, s in enumerate(result.get("sources", []))
         ]
 
         return ChatResponse(
             success=True,
             answer=result.get("answer", ""),
             sources=sources,
-            has_context=result.get("has_context", False)
+            has_context=len(sources) > 0
         )
 
     except Exception as e:
-        logger.error(f"[Agentic] 问答失败: {e}")
+        logger.error(f"[LangGraph] 问答时发生错误: {e}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=str(e)
         )
 
 
-@router.get(
-    "/v3/workflow/diagram",
-    response_class=HTMLResponse,
-    summary="Agentic Workflow 可视化"
-)
-async def agentic_workflow_diagram():
-    """生成 Agentic RAG Workflow 的可视化图表"""
-    try:
-        from modules.agentic_rag.workflow import AgenticRAGWorkflow
-        filename = generate_workflow_diagram(AgenticRAGWorkflow, "agentic_workflow.html")
-        if filename and Path(filename).exists():
-            return FileResponse(filename, media_type="text/html")
-        return HTMLResponse("<h1>无法生成工作流图表</h1><p>请确保已安装 llama-index-utils-workflow</p>")
-    except Exception as e:
-        return HTMLResponse(f"<h1>错误</h1><p>{e}</p>")
-
-
 @router.post(
-    "/v3/chat/stream",
-    summary="Agentic RAG 流式问答",
-    description="流式输出 Agent 思考过程和答案"
+    "/chat/stream",
+    summary="智能流式问答",
+    description="基于 LangGraph 多智能体的流式问答，输出处理进度和答案"
 )
-async def agentic_chat_stream(request: ChatRequest):
+async def chat_stream(
+    request: ChatRequest,
+    _: bool = Depends(verify_api_key)
+):
     """
-    Agentic RAG 流式问答接口
+    智能流式问答接口（LangGraph 多智能体）
 
     SSE 事件格式:
-    - progress: Agent 思考过程（正在分析、正在检索、正在反思等）
-    - content: 答案内容（流式输出）
-    - sources: 来源信息
+    - progress: 处理进度
+    - clarify: 需要澄清意图（返回选项）
+    - content: 答案内容
+    - attachments: 附件（导图等）
     - done: 完成标记
     """
     async def generate_stream():
         try:
-            workflow = get_agentic_stream_workflow()
+            logger.info(f"[LangGraph Stream] 问题: {request.question[:50]}...")
 
-            # 构建参数
-            filter_expr = request.filter_expr
-            if not filter_expr and request.book_id:
-                filter_expr = f"book_id = '{request.book_id}'"
-
+            # 转换历史对话格式
             history = None
             if request.history:
-                history = [{"role": m.role, "content": m.content} for m in request.history]
+                history = [{"role": msg.role, "content": msg.content} for msg in request.history]
 
-            logger.info(f"[Agentic Stream] 问题: {request.question[:50]}...")
+            # 节点进度消息映射
+            progress_messages = {
+                "intent_clarify": "正在理解您的问题...",
+                "task_plan": "正在规划任务...",
+                "retrieval_agent": "正在检索相关资料...",
+                "reasoning_agent": "正在进行推理分析...",
+                "generation_agent": "正在生成内容...",
+                "expression_agent": "正在优化表达...",
+                "quality_agent": "正在检查回答质量...",
+                "supervisor_exit": "正在整理回答...",
+                "end_clarify": "需要确认您的需求..."
+            }
 
-            # 运行流式工作流
-            handler = workflow.run(
+            # 流式运行
+            async for event in run_graph_stream(
                 query=request.question,
-                history=history,
-                user_id=request.user_id,
-                book_id=request.book_id,
-                book_name=request.book_name,
-                filter_expr=filter_expr
-            )
+                user_id=request.user_id or "anonymous",
+                book_id=request.book_id or "default",
+                book_name=request.book_name or "",
+                book_subject="",
+                history=history
+            ):
+                node = event.get("node", "")
 
-            sources = []
+                # 发送进度
+                if node:
+                    progress_msg = progress_messages.get(node, f"处理中: {node}")
+                    yield f"data: {json.dumps({'type': 'progress', 'step': node, 'message': progress_msg}, ensure_ascii=False)}\n\n"
 
-            async for event in handler.stream_events():
-                if isinstance(event, ProgressEvent):
-                    if event.progress_type == ProgressType.STREAMING:
-                        # 答案内容
-                        yield f"data: {json.dumps({'type': 'content', 'data': event.message}, ensure_ascii=False)}\n\n"
-                    elif event.progress_type == ProgressType.DONE:
-                        # 完成
-                        pass
-                    else:
-                        # 进度信息
-                        yield f"data: {json.dumps({'type': 'progress', 'step': event.progress_type.value, 'message': event.message, 'detail': event.detail}, ensure_ascii=False)}\n\n"
+                # 如果需要澄清
+                if event.get("clarification_needed"):
+                    options = event.get("clarification_options", [])
+                    yield f"data: {json.dumps({'type': 'clarify', 'options': options}, ensure_ascii=False)}\n\n"
 
-            # 获取最终结果
-            result = await handler
-            sources = result.get("sources", [])
+                # 如果有最终答案
+                answer = event.get("answer", "")
+                if answer and node in ["supervisor_exit", "end_clarify"]:
+                    # 逐字发送
+                    for char in answer:
+                        yield f"data: {json.dumps({'type': 'content', 'data': char}, ensure_ascii=False)}\n\n"
 
-            # 如果是 chitchat/clarify 类型，answer 没有通过流式发送，需要在这里发送
-            answer = result.get("answer", "")
-            query_type = result.get("query_type", "")
-            if answer and query_type in ("chitchat", "clarify"):
-                # 逐字发送答案以保持流式效果
-                for char in answer:
-                    yield f"data: {json.dumps({'type': 'content', 'data': char}, ensure_ascii=False)}\n\n"
-
-            # 发送来源
-            source_data = [{"id": s.get("id", ""), "text": s.get("text", "")[:200]} for s in sources[:5]]
-            yield f"data: {json.dumps({'type': 'sources', 'data': source_data}, ensure_ascii=False)}\n\n"
+                # 如果有附件
+                attachments = event.get("attachments", [])
+                if attachments:
+                    yield f"data: {json.dumps({'type': 'attachments', 'data': attachments}, ensure_ascii=False)}\n\n"
 
             # 完成
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
         except Exception as e:
-            logger.error(f"[Agentic Stream] 错误: {e}")
+            logger.error(f"[LangGraph Stream] 错误: {e}")
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(

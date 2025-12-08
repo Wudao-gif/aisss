@@ -45,7 +45,7 @@ class Settings(BaseSettings):
     DASHSCOPE_BASE_URL: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
     # Chat模型配置（用于RAG问答）
-    CHAT_MODEL: str = "openai/gpt-4o-mini"  # 默认使用 GPT-4o-mini，性价比高
+    CHAT_MODEL: str = "x-ai/grok-4.1-fast"  # 使用 Grok 4.1 Fast
 
     # ==================== 阿里云 DashVector 配置 ====================
     # 华北3(张家口) 集群: Dao123_
@@ -79,6 +79,19 @@ class Settings(BaseSettings):
     NEO4J_URI: str = "bolt://localhost:7687"
     NEO4J_USER: str = "neo4j"
     NEO4J_PASSWORD: str = "your_password_here"
+
+    # ==================== PostgreSQL 数据库配置（用户记忆存储）====================
+    POSTGRES_HOST: str = "127.0.0.1"
+    POSTGRES_PORT: int = 5432
+    POSTGRES_DB: str = "user_auth_db"
+    POSTGRES_USER: str = "postgres"
+    POSTGRES_PASSWORD: str = "mysecretpassword"
+
+    # ==================== 记忆向量库配置 ====================
+    # 使用独立的 Collection: jiyi (1024维, cosine)
+    # Embedding: Qwen2.5-VL-Embedding (支持 512, 768, 1024, 2048)
+    MEMORY_COLLECTION: str = "jiyi"
+    MEMORY_EMBEDDING_DIMENSION: int = 1024
 
     # 对话摘要配置
     SUMMARY_TOKEN_THRESHOLD: int = 2000  # 触发压缩的 Token 阈值
