@@ -45,7 +45,9 @@ class Settings(BaseSettings):
     DASHSCOPE_BASE_URL: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
     # Chat模型配置（用于RAG问答）
-    CHAT_MODEL: str = "x-ai/grok-4.1-fast"  # 使用 Grok 4.1 Fast
+    CHAT_PROVIDER: str = "dashscope"  # 可选: "openrouter" 或 "dashscope"
+    CHAT_MODEL: str = "qwen-flash"  # 阿里云 Qwen 模型
+    OPENROUTER_CHAT_MODEL: str = "x-ai/grok-4.1-fast"  # OpenRouter 备用
 
     # ==================== 阿里云 DashVector 配置 ====================
     # 华北3(张家口) 集群: Dao123_
@@ -118,6 +120,11 @@ class Settings(BaseSettings):
     def supported_extensions(self) -> list[str]:
         """获取支持的文件扩展名列表"""
         return [ext.strip().lower() for ext in self.SUPPORTED_FILE_TYPES.split(",")]
+
+    @property
+    def postgres_uri(self) -> str:
+        """获取 PostgreSQL 连接 URI（用于 LangGraph Checkpointer）"""
+        return f"postgresql://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}?sslmode=disable"
 
 
 @lru_cache()

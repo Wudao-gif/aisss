@@ -14,6 +14,7 @@ import httpx
 
 from config import settings
 from .state import AgentState
+from .message_utils import get_recent_context
 
 logger = logging.getLogger(__name__)
 
@@ -187,21 +188,41 @@ class ExpressionAgent:
     
     async def _answer(self, state: AgentState) -> Dict[str, Any]:
         """回答问题"""
-        
+
         context = state.get("context", "")
         query = state.get("query", "")
         style = self._get_expression_style(state)
         style_instruction = self._build_style_instruction(style)
         book_name = state.get("book_name", "")
-        
+
+        # 获取对话摘要（长期上下文）
+        summary = state.get("summary", "")
+
+        # 获取对话历史（短期上下文）
+        messages = state.get("messages", [])
+        recent_context = get_recent_context(messages, n_turns=3) if messages else ""
+
+        # 构建历史上下文部分
+        history_section = ""
+        if summary:
+            history_section += f"""
+对话摘要（之前的对话要点）：
+{summary}
+"""
+        if recent_context:
+            history_section += f"""
+最近对话：
+{recent_context}
+"""
+
         prompt = f"""请回答以下问题。
 
 教材：{book_name if book_name else "未知"}
-
+{history_section}
 参考资料：
 {context if context else "（无参考资料）"}
 
-问题：{query}
+当前问题：{query}
 
 {style_instruction}
 
@@ -210,6 +231,8 @@ class ExpressionAgent:
 2. 条理清晰
 3. 如果使用了参考资料，用 [来源X] 标注
 4. 如果参考资料不足，基于专业知识补充，但要说明
+5. 如果问题涉及之前对话的内容，要正确理解指代关系
+6. 参考对话摘要中的用户信息（如姓名、偏好等）
 
 请回答："""
 

@@ -14,7 +14,8 @@ import httpx
 
 from config import settings
 from .state import AgentState, IntentType, TaskType, MemoryType, EvidenceSource
-from .letta_client import get_letta_client
+from .message_utils import get_recent_context, trim_conversation_history
+from .memory_store import get_memory_manager
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +35,6 @@ class SupervisorAgent:
     """Supervisor 智能体"""
 
     def __init__(self):
-        self.letta_client = get_letta_client()
         self.chat_model = settings.CHAT_MODEL
 
     # ==================== 入口阶段 ====================
@@ -95,9 +95,52 @@ class SupervisorAgent:
     async def _analyze_intent(self, state: AgentState) -> Dict[str, Any]:
         """分析用户意图"""
 
-        prompt = f"""分析用户的问题，判断意图是否明确。
+        # 获取长期记忆（跨会话）
+        user_id = state.get("user_id", "anonymous")
+        book_id = state.get("book_id", "default")
+        query = state.get("query", "")
 
-用户问题：{state['query']}
+        long_term_memory = ""
+        memory_manager = get_memory_manager()
+        if memory_manager:
+            try:
+                context = await memory_manager.get_user_context(
+                    user_id=user_id,
+                    book_id=book_id,
+                    query=query
+                )
+                long_term_memory = memory_manager.format_context_for_prompt(context)
+            except Exception as e:
+                logger.warning(f"获取长期记忆失败: {e}")
+
+        # 获取对话摘要（会话内压缩）
+        summary = state.get("summary", "")
+
+        # 获取最近对话历史（短期上下文）
+        messages = state.get("messages", [])
+        recent_context = get_recent_context(messages, n_turns=3) if messages else ""
+
+        # 构建历史上下文部分
+        history_section = ""
+        if long_term_memory:
+            history_section += f"""
+用户长期记忆：
+{long_term_memory}
+"""
+        if summary:
+            history_section += f"""
+对话摘要（本次会话要点）：
+{summary}
+"""
+        if recent_context:
+            history_section += f"""
+最近对话历史：
+{recent_context}
+"""
+
+        prompt = f"""分析用户的问题，判断意图是否明确。
+{history_section}
+当前问题：{query}
 教材：{state.get('book_name', '未知')}
 
 意图类型：
@@ -313,15 +356,12 @@ class SupervisorAgent:
             if state.get("evidence_source") == EvidenceSource.WEB.value:
                 state["final_answer"] += "\n\n📌 *此回答部分内容来源于网络搜索*"
 
-            # 更新 Letta 记忆
-            await self.letta_client.update_memory(
-                user_id=state["user_id"],
-                book_id=state["book_id"],
-                book_name=state.get("book_name", ""),
-                dialog_id=f"{state['user_id']}_{state['book_id']}",
-                user_message=state["query"],
-                assistant_message=state["final_answer"]
-            )
+            # 将 AI 回复添加到 messages（短期记忆）
+            from langchain_core.messages import AIMessage
+            state["messages"] = [AIMessage(content=state["final_answer"])]
+
+            # 更新长期记忆（使用 LangGraph Store）
+            await self._update_long_term_memory(state)
 
             logger.info("Supervisor 出口处理完成")
 
@@ -358,6 +398,102 @@ class SupervisorAgent:
                 })
 
         return citations
+
+    async def _update_long_term_memory(self, state: AgentState) -> None:
+        """
+        更新长期记忆
+        从对话中提取用户信息并存储到 LangGraph Store
+        """
+        memory_manager = get_memory_manager()
+        if not memory_manager:
+            logger.debug("MemoryManager 未初始化，跳过长期记忆更新")
+            return
+
+        user_id = state.get("user_id", "anonymous")
+        book_id = state.get("book_id", "default")
+        query = state.get("query", "")
+        answer = state.get("final_answer", "")
+
+        try:
+            # 使用 LLM 提取需要记住的信息
+            facts = await self._extract_facts_from_conversation(query, answer)
+
+            # 存储提取的事实
+            for fact in facts:
+                await memory_manager.store_user_fact(
+                    user_id=user_id,
+                    fact_type=fact.get("type", "general"),
+                    fact_value=fact.get("value", ""),
+                    source="conversation"
+                )
+
+            # 记录学习事件
+            intent = state.get("intent", "")
+            if intent in ["concept_explain", "homework_help", "exercise_practice"]:
+                await memory_manager.log_learning_event(
+                    user_id=user_id,
+                    book_id=book_id,
+                    event_type="question",
+                    content=query,
+                    result=answer[:200]  # 只保存前200字符
+                )
+
+            logger.debug(f"长期记忆更新完成: user={user_id}, facts={len(facts)}")
+
+        except Exception as e:
+            logger.warning(f"更新长期记忆失败: {e}")
+
+    async def _extract_facts_from_conversation(
+        self,
+        query: str,
+        answer: str
+    ) -> list:
+        """
+        从对话中提取需要记住的用户信息
+        返回: [{"type": "name", "value": "小明"}, ...]
+        """
+        # 简单的关键词匹配（可以后续用 LLM 增强）
+        facts = []
+
+        # 检测用户自我介绍
+        name_patterns = [
+            r"我叫(.{1,10})",
+            r"我是(.{1,10})",
+            r"我的名字是(.{1,10})",
+        ]
+
+        for pattern in name_patterns:
+            match = re.search(pattern, query)
+            if match:
+                name = match.group(1).strip()
+                # 过滤掉太长或包含标点的
+                if len(name) <= 6 and not re.search(r'[，。！？、]', name):
+                    facts.append({"type": "name", "value": name})
+                    break
+
+        # 检测年级信息
+        grade_patterns = [
+            r"我(是|在读)?(.{1,3}年级)",
+            r"我(是|在读)?(.{1,3}年)",
+        ]
+
+        for pattern in grade_patterns:
+            match = re.search(pattern, query)
+            if match:
+                grade = match.group(2).strip()
+                facts.append({"type": "grade", "value": grade})
+                break
+
+        # 检测学习偏好
+        if "喜欢" in query or "偏好" in query:
+            preference_match = re.search(r"喜欢(.{2,20})", query)
+            if preference_match:
+                facts.append({
+                    "type": "preference",
+                    "value": preference_match.group(1).strip()
+                })
+
+        return facts
 
 
 # 全局 Supervisor 实例

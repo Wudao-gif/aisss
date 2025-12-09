@@ -52,4 +52,5 @@ psycopg2-binary
 
 # LangGraph 多智能体
 langgraph
+langgraph-checkpoint-postgres
 langchain-core

@@ -12,10 +12,14 @@ LangGraph 多智能体系统
 """
 
 from .state import AgentState, create_initial_state, IntentType, MemoryType, TaskType, EvidenceSource
-from .graph import create_graph, compile_graph, run_graph, run_graph_stream
+from .graph import (
+    create_graph, compile_graph, run_graph, run_graph_stream,
+    set_checkpointer, get_checkpointer,
+    set_store, get_store,
+    get_compiled_graph
+)
 from .supervisor import SupervisorAgent, get_supervisor
-from .letta_client import LettaClient, get_letta_client
-from .retrieval import HybridRetriever, get_retriever
+from .tools import retrieve_from_textbook, search_knowledge_graph, retrieval_tools
 from .retrieval_agent import RetrievalAgent, get_retrieval_agent
 from .reasoning_agent import ReasoningAgent, get_reasoning_agent
 from .generation_agent import GenerationAgent, get_generation_agent
@@ -35,15 +39,18 @@ __all__ = [
     "compile_graph",
     "run_graph",
     "run_graph_stream",
+    "set_checkpointer",
+    "get_checkpointer",
+    "set_store",
+    "get_store",
+    "get_compiled_graph",
     # Supervisor
     "SupervisorAgent",
     "get_supervisor",
-    # Letta
-    "LettaClient",
-    "get_letta_client",
-    # Retrieval
-    "HybridRetriever",
-    "get_retriever",
+    # Tools (Agentic RAG)
+    "retrieve_from_textbook",
+    "search_knowledge_graph",
+    "retrieval_tools",
     # Agents
     "RetrievalAgent",
     "get_retrieval_agent",

@@ -205,6 +205,10 @@ class ChatRequest(BaseModel):
         None,
         description="历史对话记录，用于多轮对话"
     )
+    thread_id: Optional[str] = Field(
+        None,
+        description="对话线程ID，用于短期记忆持久化。不传则自动生成 user_id_book_id"
+    )
 
     class Config:
         json_schema_extra = {

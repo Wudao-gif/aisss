@@ -23,6 +23,14 @@ from .reasoning_agent import reasoning_agent_node
 from .generation_agent import generation_agent_node
 from .expression_agent import expression_agent_node
 from .quality_agent import quality_agent_node
+from .message_utils import (
+    create_cleanup_messages,
+    should_cleanup_messages,
+    should_summarize_messages,
+    build_summary_prompt,
+    get_messages_to_remove_after_summary,
+    SUMMARY_KEEP
+)
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +123,80 @@ def create_graph() -> StateGraph:
 
     graph.add_node("end_clarify", end_clarify_node)
 
+    # 消息管理节点（摘要 + 清理）
+    async def manage_messages_node(state: AgentState) -> AgentState:
+        """
+        消息管理节点 - 摘要和清理消息历史
+
+        策略（按优先级）：
+        1. 摘要策略（优先）：消息数 > 20 时，生成摘要并保留最近 4 条
+        2. 清理策略（备用）：消息数 > 30 时，直接删除最早的消息
+
+        摘要会保留关键信息（用户姓名、偏好、讨论话题等）
+        """
+        import httpx
+        from config import settings
+
+        state["current_node"] = "manage_messages"
+        messages = state.get("messages", [])
+        existing_summary = state.get("summary", "")
+
+        # 策略1：摘要（优先）
+        if should_summarize_messages(messages):
+            logger.info(f"触发消息摘要: {len(messages)} 条消息")
+
+            try:
+                # 构建摘要提示词
+                summary_prompt = build_summary_prompt(messages, existing_summary)
+
+                # 调用 LLM 生成摘要
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    response = await client.post(
+                        f"{settings.OPENROUTER_BASE_URL}/chat/completions",
+                        headers={
+                            "Authorization": f"Bearer {settings.OPENROUTER_API_KEY}",
+                            "Content-Type": "application/json",
+                        },
+                        json={
+                            "model": settings.CHAT_MODEL,
+                            "messages": [{"role": "user", "content": summary_prompt}],
+                            "temperature": 0.3,
+                            "max_tokens": 300,
+                        }
+                    )
+                    response.raise_for_status()
+                    data = response.json()
+                    new_summary = data["choices"][0]["message"]["content"].strip()
+
+                # 获取需要删除的消息
+                remove_messages = get_messages_to_remove_after_summary(messages, keep=SUMMARY_KEEP)
+
+                logger.info(f"摘要生成成功: {len(new_summary)} 字符，删除 {len(remove_messages)} 条消息")
+
+                return {
+                    "summary": new_summary,
+                    "messages": remove_messages
+                }
+
+            except Exception as e:
+                logger.error(f"摘要生成失败: {e}，降级为简单清理")
+                # 降级为简单清理
+                if should_cleanup_messages(messages):
+                    remove_messages = create_cleanup_messages(messages)
+                    if remove_messages:
+                        return {"messages": remove_messages}
+
+        # 策略2：简单清理（备用）
+        elif should_cleanup_messages(messages):
+            logger.info(f"触发消息清理: {len(messages)} 条消息")
+            remove_messages = create_cleanup_messages(messages)
+            if remove_messages:
+                return {"messages": remove_messages}
+
+        return state
+
+    graph.add_node("manage_messages", manage_messages_node)
+
     # ==================== 添加边 ====================
 
     # 设置入口点
@@ -202,19 +284,73 @@ def create_graph() -> StateGraph:
         }
     )
 
-    # Supervisor 出口 -> 结束
-    graph.add_edge("supervisor_exit", END)
+    # Supervisor 出口 -> 消息管理（摘要+清理） -> 结束
+    graph.add_edge("supervisor_exit", "manage_messages")
+    graph.add_edge("manage_messages", END)
 
-    logger.info("LangGraph 图创建完成（新架构）")
+    logger.info("LangGraph 图创建完成（新架构，含消息摘要和清理）")
 
     return graph
 
 
+# 全局 Checkpointer（短期记忆，由 main.py lifespan 初始化）
+_checkpointer = None
+
+# 全局 Store（长期记忆，由 main.py lifespan 初始化）
+_store = None
+
+
+def set_checkpointer(checkpointer):
+    """设置全局 Checkpointer（由 main.py 调用）"""
+    global _checkpointer, _compiled_graph
+    _checkpointer = checkpointer
+    # 重置编译后的图，下次调用时会重新编译
+    _compiled_graph = None
+    logger.info(f"Checkpointer 已设置: {checkpointer is not None}")
+
+
+def get_checkpointer():
+    """获取全局 Checkpointer"""
+    return _checkpointer
+
+
+def set_store(store):
+    """设置全局 Store（由 main.py 调用）"""
+    global _store, _compiled_graph
+    _store = store
+    # 重置编译后的图，下次调用时会重新编译
+    _compiled_graph = None
+    logger.info(f"Store 已设置: {store is not None}")
+
+
+def get_store():
+    """获取全局 Store"""
+    return _store
+
+
 def compile_graph():
-    """编译图"""
+    """编译图（带 Checkpointer 和 Store 支持记忆）"""
     graph = create_graph()
-    compiled = graph.compile()
-    logger.info("LangGraph 图编译完成")
+    checkpointer = get_checkpointer()
+    store = get_store()
+
+    compile_kwargs = {}
+    if checkpointer:
+        compile_kwargs["checkpointer"] = checkpointer
+    if store:
+        compile_kwargs["store"] = store
+
+    if compile_kwargs:
+        compiled = graph.compile(**compile_kwargs)
+        features = []
+        if checkpointer:
+            features.append("短期记忆")
+        if store:
+            features.append("长期记忆")
+        logger.info(f"LangGraph 图编译完成（{', '.join(features)}）")
+    else:
+        compiled = graph.compile()
+        logger.info("LangGraph 图编译完成（无记忆）")
     return compiled
 
 
@@ -237,7 +373,8 @@ async def run_graph(
     book_name: str = "",
     book_subject: str = "",
     history: list = None,
-    clarification_response: str = None
+    clarification_response: str = None,
+    thread_id: str = None
 ) -> Dict[str, Any]:
     """
     运行图（非流式）
@@ -250,6 +387,7 @@ async def run_graph(
         book_subject: 教材学科
         history: 对话历史
         clarification_response: 用户对澄清问题的回复
+        thread_id: 对话线程ID（用于短期记忆持久化）
 
     Returns:
         {
@@ -262,7 +400,7 @@ async def run_graph(
             ...
         }
     """
-    logger.info(f"运行 LangGraph: query={query[:50]}...")
+    logger.info(f"运行 LangGraph: query={query[:50]}..., thread_id={thread_id}")
 
     # 创建初始状态
     initial_state = create_initial_state(
@@ -281,8 +419,13 @@ async def run_graph(
     # 获取编译后的图
     compiled = get_compiled_graph()
 
+    # 构建配置（包含 thread_id 用于短期记忆）
+    # 如果没有提供 thread_id，使用 user_id + book_id 作为默认值
+    effective_thread_id = thread_id or f"{user_id}_{book_id}"
+    config = {"configurable": {"thread_id": effective_thread_id, "user_id": user_id}}
+
     # 运行图
-    final_state = await compiled.ainvoke(initial_state)
+    final_state = await compiled.ainvoke(initial_state, config)
 
     # 返回结果
     return {
@@ -306,15 +449,19 @@ async def run_graph_stream(
     book_name: str = "",
     book_subject: str = "",
     history: list = None,
-    clarification_response: str = None
+    clarification_response: str = None,
+    thread_id: str = None
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """
     运行图（流式）
 
+    Args:
+        thread_id: 对话线程ID（用于短期记忆持久化）
+
     Yields:
         每个节点的状态更新
     """
-    logger.info(f"流式运行 LangGraph: query={query[:50]}...")
+    logger.info(f"流式运行 LangGraph: query={query[:50]}..., thread_id={thread_id}")
 
     # 创建初始状态
     initial_state = create_initial_state(
@@ -333,8 +480,13 @@ async def run_graph_stream(
     # 获取编译后的图
     compiled = get_compiled_graph()
 
+    # 构建配置（包含 thread_id 用于短期记忆）
+    # 如果没有提供 thread_id，使用 user_id + book_id 作为默认值
+    effective_thread_id = thread_id or f"{user_id}_{book_id}"
+    config = {"configurable": {"thread_id": effective_thread_id, "user_id": user_id}}
+
     # 流式运行
-    async for event in compiled.astream(initial_state):
+    async for event in compiled.astream(initial_state, config):
         # event 是 {node_name: state} 的字典
         for node_name, state in event.items():
             yield {

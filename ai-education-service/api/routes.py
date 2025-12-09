@@ -294,14 +294,20 @@ async def chat(
         if request.history:
             history = [{"role": msg.role, "content": msg.content} for msg in request.history]
 
+        # 构建 thread_id（用于短期记忆持久化）
+        user_id = request.user_id or "anonymous"
+        book_id = request.book_id or "default"
+        thread_id = request.thread_id or f"{user_id}_{book_id}"
+
         # 运行 LangGraph
         result = await run_graph(
             query=request.question,
-            user_id=request.user_id or "anonymous",
-            book_id=request.book_id or "default",
+            user_id=user_id,
+            book_id=book_id,
             book_name=request.book_name or "",
             book_subject="",
-            history=history
+            history=history,
+            thread_id=thread_id
         )
 
         # 转换来源为响应格式
@@ -360,6 +366,11 @@ async def chat_stream(
             if request.history:
                 history = [{"role": msg.role, "content": msg.content} for msg in request.history]
 
+            # 构建 thread_id（用于短期记忆持久化）
+            user_id = request.user_id or "anonymous"
+            book_id = request.book_id or "default"
+            thread_id = request.thread_id or f"{user_id}_{book_id}"
+
             # 节点进度消息映射
             progress_messages = {
                 "intent_clarify": "正在理解您的问题...",
@@ -376,11 +387,12 @@ async def chat_stream(
             # 流式运行
             async for event in run_graph_stream(
                 query=request.question,
-                user_id=request.user_id or "anonymous",
-                book_id=request.book_id or "default",
+                user_id=user_id,
+                book_id=book_id,
                 book_name=request.book_name or "",
                 book_subject="",
-                history=history
+                history=history,
+                thread_id=thread_id
             ):
                 node = event.get("node", "")
 

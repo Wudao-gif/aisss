@@ -8,8 +8,9 @@ LangGraph 状态定义
 - Supervisor 出口：输出 + 存储记忆
 """
 
-from typing import TypedDict, List, Dict, Any, Optional, Literal
+from typing import TypedDict, List, Dict, Any, Optional, Literal, Annotated
 from enum import Enum
+from langgraph.graph import add_messages
 
 
 class IntentType(str, Enum):
@@ -73,13 +74,20 @@ class AgentState(TypedDict, total=False):
     4. Supervisor 出口：输出 → 存储记忆
     """
 
+    # ==================== 消息字段（短期记忆） ====================
+    # 使用 add_messages reducer 自动累积对话历史
+    messages: Annotated[list, add_messages]
+
+    # 对话摘要（用于压缩历史消息，保留关键信息）
+    summary: str
+
     # ==================== 输入字段 ====================
     query: str                          # 用户原始问题
     user_id: str                        # 用户ID
     book_id: str                        # 教材ID
     book_name: str                      # 教材名称
     book_subject: str                   # 教材学科
-    history: List[Dict[str, str]]       # 对话历史
+    history: List[Dict[str, str]]       # 对话历史（兼容旧接口，逐步废弃）
 
     # ==================== 意图澄清字段 ====================
     intent_clear: bool                  # 意图是否明确
@@ -156,7 +164,16 @@ def create_initial_state(
     Returns:
         初始化的 AgentState
     """
+    # 将用户问题转为 HumanMessage
+    from langchain_core.messages import HumanMessage
+
     return AgentState(
+        # 消息（短期记忆）- 添加用户消息
+        messages=[HumanMessage(content=query)],
+
+        # 对话摘要（初始为空）
+        summary="",
+
         # 输入
         query=query,
         user_id=user_id,

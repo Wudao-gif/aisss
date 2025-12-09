@@ -9,9 +9,13 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from langgraph.store.postgres.aio import AsyncPostgresStore
 
 from config import settings
 from api import router
+from modules.langgraph import set_checkpointer, set_store, get_compiled_graph
+from modules.langgraph.memory_store import MemoryManager, set_memory_manager
 
 # 配置日志
 logging.basicConfig(
@@ -40,11 +44,43 @@ async def lifespan(app: FastAPI):
         logger.info(f"🤖 Embedding: DashScope/{settings.DASHSCOPE_EMBEDDING_MODEL} (维度: {settings.EMBEDDING_DIMENSION})")
     else:
         logger.info(f"🤖 Embedding: OpenRouter/{settings.EMBEDDING_MODEL} (维度: {settings.EMBEDDING_DIMENSION})")
-    
-    yield
-    
-    # 关闭时
-    logger.info("👋 服务正在关闭...")
+
+    # 初始化 LangGraph Checkpointer（短期记忆）和 Store（长期记忆）
+    logger.info(f"🧠 初始化 PostgreSQL 持久化...")
+    logger.info(f"📊 PostgreSQL: {settings.POSTGRES_HOST}:{settings.POSTGRES_PORT}/{settings.POSTGRES_DB}")
+
+    async with (
+        AsyncPostgresStore.from_conn_string(settings.postgres_uri) as store,
+        AsyncPostgresSaver.from_conn_string(settings.postgres_uri) as checkpointer,
+    ):
+        # 首次使用时创建表
+        await store.setup()
+        await checkpointer.setup()
+
+        # 设置全局实例
+        set_store(store)
+        set_checkpointer(checkpointer)
+
+        # 初始化 MemoryManager（长期记忆管理器）
+        memory_manager = MemoryManager(store)
+        set_memory_manager(memory_manager)
+
+        logger.info(f"✅ Store（长期记忆）初始化完成")
+        logger.info(f"✅ Checkpointer（短期记忆）初始化完成")
+        logger.info(f"✅ MemoryManager 初始化完成")
+
+        # 预热：初始化 LangGraph 图和所有智能体
+        logger.info("🤖 预热智能体...")
+        get_compiled_graph()
+        logger.info("✅ 智能体预热完成: Supervisor, Retrieval, Reasoning, Generation, Expression, Quality")
+
+        yield
+
+        # 关闭时
+        logger.info("👋 服务正在关闭...")
+        set_memory_manager(None)
+        set_store(None)
+        set_checkpointer(None)
 
 
 # 创建 FastAPI 应用
