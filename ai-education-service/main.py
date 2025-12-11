@@ -14,8 +14,14 @@ from langgraph.store.postgres.aio import AsyncPostgresStore
 
 from config import settings
 from api import router
-from modules.langgraph import set_checkpointer, set_store, get_compiled_graph
-from modules.langgraph.memory_store import MemoryManager, set_memory_manager
+from modules.langgraph import (
+    set_deep_agent_checkpointer,
+    set_deep_agent_store,
+    get_deep_agent,
+    # 旧架构（保留兼容）
+    set_checkpointer,
+    set_store,
+)
 
 # 配置日志
 logging.basicConfig(
@@ -57,22 +63,21 @@ async def lifespan(app: FastAPI):
         await store.setup()
         await checkpointer.setup()
 
-        # 设置全局实例
+        # 设置全局实例（Deep Agent 主系统）
+        set_deep_agent_store(store)
+        set_deep_agent_checkpointer(checkpointer)
+
+        # 旧架构也设置（保留兼容）
         set_store(store)
         set_checkpointer(checkpointer)
 
-        # 初始化 MemoryManager（长期记忆管理器）
-        memory_manager = MemoryManager(store)
-        set_memory_manager(memory_manager)
-
         logger.info(f"✅ Store（长期记忆）初始化完成")
         logger.info(f"✅ Checkpointer（短期记忆）初始化完成")
-        logger.info(f"✅ MemoryManager 初始化完成")
 
-        # 预热：初始化 LangGraph 图和所有智能体
-        logger.info("🤖 预热智能体...")
-        get_compiled_graph()
-        logger.info("✅ 智能体预热完成: Supervisor, Retrieval, Reasoning, Generation, Expression, Quality")
+        # 预热：初始化 Deep Agent 主系统
+        logger.info("🤖 预热 Deep Agent 主系统...")
+        get_deep_agent()
+        logger.info("✅ Deep Agent 主系统预热完成")
 
         yield
 
@@ -140,6 +145,12 @@ async def root():
         "docs": "/docs",
         "health": f"{settings.API_PREFIX}/health"
     }
+
+
+@app.get("/api/health", tags=["健康检查"])
+async def health_compat():
+    """兼容旧路径的健康检查（供 Docker HEALTHCHECK 使用）"""
+    return {"status": "healthy"}
 
 
 if __name__ == "__main__":

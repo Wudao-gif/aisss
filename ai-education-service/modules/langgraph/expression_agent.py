@@ -21,9 +21,17 @@ logger = logging.getLogger(__name__)
 
 class ExpressionAgent:
     """表达专家智能体"""
-    
+
     def __init__(self):
-        self.chat_model = settings.CHAT_MODEL
+        # 根据 CHAT_PROVIDER 选择模型和 API
+        if settings.CHAT_PROVIDER == "dashscope":
+            self.chat_model = settings.CHAT_MODEL
+            self.api_base_url = settings.DASHSCOPE_BASE_URL
+            self.api_key = settings.DASHSCOPE_API_KEY
+        else:
+            self.chat_model = settings.OPENROUTER_CHAT_MODEL
+            self.api_base_url = settings.OPENROUTER_BASE_URL
+            self.api_key = settings.OPENROUTER_API_KEY
     
     async def run(self, state: AgentState) -> AgentState:
         """
@@ -286,9 +294,9 @@ class ExpressionAgent:
         """调用 LLM"""
         async with httpx.AsyncClient(timeout=120.0) as client:
             response = await client.post(
-                f"{settings.OPENROUTER_BASE_URL}/chat/completions",
+                f"{self.api_base_url}/chat/completions",
                 headers={
-                    "Authorization": f"Bearer {settings.OPENROUTER_API_KEY}",
+                    "Authorization": f"Bearer {self.api_key}",
                     "Content-Type": "application/json",
                 },
                 json={

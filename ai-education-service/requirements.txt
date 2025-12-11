@@ -54,3 +54,7 @@ psycopg2-binary
 langgraph
 langgraph-checkpoint-postgres
 langchain-core
+langchain-openai
+
+# Deep Agents
+deepagents

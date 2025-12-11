@@ -1,16 +1,29 @@
 """
 LangGraph 多智能体系统
-实现 Supervisor + 专业智能体的协作架构
 
-新架构：
-- Supervisor：意图澄清 + 任务规划 + 输出存储
-- 检索专家：记忆获取 + 向量检索 + 图谱检索
-- 推理专家：数学/逻辑推理
-- 生成专家：表格/导图/计划生成
-- 表达专家：专业/通俗表达调整
-- 质量检查：验证回答质量
+架构演进：
+- 旧架构：Supervisor + 专业智能体（graph.py）
+- 新架构：Deep Agent 主系统 + 子代理（deep_agent.py）
+
+Deep Agent 配置项：
+- model: 主 LLM 模型
+- tools: 自定义工具（检索、记忆等）
+- system_prompt: 系统提示词
+- subagents: 子代理列表
+- checkpointer: 短期记忆持久化
+- store: 长期记忆持久化
 """
 
+# ==================== Deep Agent（新主系统） ====================
+from .deep_agent import (
+    get_deep_agent,
+    run_deep_agent,
+    run_deep_agent_stream,
+    set_deep_agent_checkpointer,
+    set_deep_agent_store,
+)
+
+# ==================== 旧架构（保留兼容） ====================
 from .state import AgentState, create_initial_state, IntentType, MemoryType, TaskType, EvidenceSource
 from .graph import (
     create_graph, compile_graph, run_graph, run_graph_stream,
@@ -19,7 +32,17 @@ from .graph import (
     get_compiled_graph
 )
 from .supervisor import SupervisorAgent, get_supervisor
-from .tools import retrieve_from_textbook, search_knowledge_graph, retrieval_tools
+
+# ==================== 工具（统一管理） ====================
+from .tools import (
+    retrieve_from_textbook,
+    search_knowledge_graph,
+    retrieval_tools,
+    memory_read,
+    memory_write,
+    memory_tools,
+    ALL_TOOLS,
+)
 from .retrieval_agent import RetrievalAgent, get_retrieval_agent
 from .reasoning_agent import ReasoningAgent, get_reasoning_agent
 from .generation_agent import GenerationAgent, get_generation_agent
@@ -27,6 +50,14 @@ from .expression_agent import ExpressionAgent, get_expression_agent
 from .quality_agent import QualityAgent, get_quality_agent
 
 __all__ = [
+    # ==================== Deep Agent（新主系统） ====================
+    "get_deep_agent",
+    "run_deep_agent",
+    "run_deep_agent_stream",
+    "set_deep_agent_checkpointer",
+    "set_deep_agent_store",
+
+    # ==================== 旧架构（保留兼容） ====================
     # State
     "AgentState",
     "create_initial_state",
@@ -47,10 +78,14 @@ __all__ = [
     # Supervisor
     "SupervisorAgent",
     "get_supervisor",
-    # Tools (Agentic RAG)
+    # 工具（统一管理）
     "retrieve_from_textbook",
     "search_knowledge_graph",
     "retrieval_tools",
+    "memory_read",
+    "memory_write",
+    "memory_tools",
+    "ALL_TOOLS",
     # Agents
     "RetrievalAgent",
     "get_retrieval_agent",

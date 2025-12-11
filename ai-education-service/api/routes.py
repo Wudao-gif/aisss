@@ -24,7 +24,7 @@ from .schemas import (
 from .dependencies import verify_api_key
 from modules import ProcessingPipeline, RAGRetriever
 from modules.document_workflow import get_document_workflow
-from modules.langgraph import run_graph, run_graph_stream
+from modules.langgraph import run_deep_agent, run_deep_agent_stream
 from config import settings
 
 logger = logging.getLogger(__name__)
@@ -271,23 +271,24 @@ async def delete_vectors(
     "/chat",
     response_model=ChatResponse,
     summary="智能问答",
-    description="基于 LangGraph 多智能体架构的智能问答，支持记忆、混合检索、个性化回答"
+    description="基于 Deep Agent 主系统的智能问答，支持记忆、任务规划、子代理委托"
 )
 async def chat(
     request: ChatRequest,
     _: bool = Depends(verify_api_key)
 ):
     """
-    智能问答接口（LangGraph 多智能体）
+    智能问答接口（Deep Agent 主系统）
 
     特性：
-    - Supervisor 协调多个专业智能体
-    - Letta 长期记忆（用户画像、知识理解、学习轨迹）
-    - 混合检索（向量 + 知识图谱）
-    - 个性化回答调整
+    - Deep Agent 作为主系统
+    - 自动任务规划（TodoListMiddleware）
+    - 文件系统访问（FilesystemMiddleware）
+    - 子代理委托（SubAgentMiddleware）
+    - 长期记忆（memory_read/memory_write）
     """
     try:
-        logger.info(f"[LangGraph] 收到问答请求: {request.question[:50]}...")
+        logger.info(f"[Deep Agent] 收到问答请求: {request.question[:50]}...")
 
         # 转换历史对话格式
         history = None
@@ -299,8 +300,8 @@ async def chat(
         book_id = request.book_id or "default"
         thread_id = request.thread_id or f"{user_id}_{book_id}"
 
-        # 运行 LangGraph
-        result = await run_graph(
+        # 运行 Deep Agent
+        result = await run_deep_agent(
             query=request.question,
             user_id=user_id,
             book_id=book_id,
@@ -310,26 +311,19 @@ async def chat(
             thread_id=thread_id
         )
 
-        # 转换来源为响应格式
-        sources = [
-            SearchResult(
-                id=f"source-{i}",
-                text=s.get("text", "")[:500],
-                score=s.get("score", 0),
-                metadata=s.get("metadata")
-            )
-            for i, s in enumerate(result.get("sources", []))
-        ]
+        # Deep Agent 返回格式：{"answer": "...", "error": None}
+        if result.get("error"):
+            raise Exception(result["error"])
 
         return ChatResponse(
             success=True,
             answer=result.get("answer", ""),
-            sources=sources,
-            has_context=len(sources) > 0
+            sources=[],  # Deep Agent 暂不返回来源
+            has_context=False
         )
 
     except Exception as e:
-        logger.error(f"[LangGraph] 问答时发生错误: {e}")
+        logger.error(f"[Deep Agent] 问答时发生错误: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(
@@ -341,25 +335,27 @@ async def chat(
 @router.post(
     "/chat/stream",
     summary="智能流式问答",
-    description="基于 LangGraph 多智能体的流式问答，输出处理进度和答案"
+    description="基于 Deep Agent 主系统的流式问答，输出处理进度和答案"
 )
 async def chat_stream(
     request: ChatRequest,
     _: bool = Depends(verify_api_key)
 ):
     """
-    智能流式问答接口（LangGraph 多智能体）
+    智能流式问答接口（Deep Agent 主系统）
 
     SSE 事件格式:
-    - progress: 处理进度
-    - clarify: 需要澄清意图（返回选项）
-    - content: 答案内容
-    - attachments: 附件（导图等）
+    - start: 开始处理
+    - progress: 处理进度（来自工具的自定义进度）
+    - node: 节点状态更新
+    - token: LLM token 流式输出（逐字）
+    - answer: 完整回答
+    - error: 错误信息
     - done: 完成标记
     """
     async def generate_stream():
         try:
-            logger.info(f"[LangGraph Stream] 问题: {request.question[:50]}...")
+            logger.info(f"[Deep Agent Stream] 问题: {request.question[:50]}...")
 
             # 转换历史对话格式
             history = None
@@ -371,21 +367,15 @@ async def chat_stream(
             book_id = request.book_id or "default"
             thread_id = request.thread_id or f"{user_id}_{book_id}"
 
-            # 节点进度消息映射
-            progress_messages = {
-                "intent_clarify": "正在理解您的问题...",
-                "task_plan": "正在规划任务...",
-                "retrieval_agent": "正在检索相关资料...",
-                "reasoning_agent": "正在进行推理分析...",
-                "generation_agent": "正在生成内容...",
-                "expression_agent": "正在优化表达...",
-                "quality_agent": "正在检查回答质量...",
-                "supervisor_exit": "正在整理回答...",
-                "end_clarify": "需要确认您的需求..."
+            # 节点进度消息映射（友好名称）
+            node_messages = {
+                "agent": {"message": "🤔 正在思考...", "icon": "thinking"},
+                "tools": {"message": "🔧 正在使用工具...", "icon": "tool"},
+                "education_agent": {"message": "📖 正在处理...", "icon": "processing"},
             }
 
-            # 流式运行
-            async for event in run_graph_stream(
+            # 流式运行 Deep Agent
+            async for event in run_deep_agent_stream(
                 query=request.question,
                 user_id=user_id,
                 book_id=book_id,
@@ -394,35 +384,47 @@ async def chat_stream(
                 history=history,
                 thread_id=thread_id
             ):
-                node = event.get("node", "")
+                event_type = event.get("event_type", "")
 
-                # 发送进度
-                if node:
-                    progress_msg = progress_messages.get(node, f"处理中: {node}")
-                    yield f"data: {json.dumps({'type': 'progress', 'step': node, 'message': progress_msg}, ensure_ascii=False)}\n\n"
+                if event_type == "start":
+                    # 开始事件
+                    yield f"data: {json.dumps({'type': 'start', 'message': event.get('message', '开始处理...')}, ensure_ascii=False)}\n\n"
 
-                # 如果需要澄清
-                if event.get("clarification_needed"):
-                    options = event.get("clarification_options", [])
-                    yield f"data: {json.dumps({'type': 'clarify', 'options': options}, ensure_ascii=False)}\n\n"
+                elif event_type == "node":
+                    # 节点状态更新（过滤内部中间件节点）
+                    node = event.get("node", "")
+                    # 跳过内部中间件节点
+                    if "Middleware" in node or node.startswith("_"):
+                        continue
+                    node_info = node_messages.get(node, {"message": f"处理中: {node}", "icon": "processing"})
+                    yield f"data: {json.dumps({'type': 'progress', 'step': node, 'message': node_info['message'], 'icon': node_info['icon']}, ensure_ascii=False)}\n\n"
 
-                # 如果有最终答案
-                answer = event.get("answer", "")
-                if answer and node in ["supervisor_exit", "end_clarify"]:
-                    # 逐字发送
-                    for char in answer:
-                        yield f"data: {json.dumps({'type': 'content', 'data': char}, ensure_ascii=False)}\n\n"
+                elif event_type == "progress":
+                    # 自定义进度（来自工具）
+                    yield f"data: {json.dumps({'type': 'progress', 'step': event.get('step', ''), 'status': event.get('status', ''), 'message': event.get('message', ''), 'icon': event.get('icon', '')}, ensure_ascii=False)}\n\n"
 
-                # 如果有附件
-                attachments = event.get("attachments", [])
-                if attachments:
-                    yield f"data: {json.dumps({'type': 'attachments', 'data': attachments}, ensure_ascii=False)}\n\n"
+                elif event_type == "token":
+                    # LLM token 流式输出（逐字）
+                    content = event.get("content", "")
+                    if content:
+                        yield f"data: {json.dumps({'type': 'token', 'data': content}, ensure_ascii=False)}\n\n"
+
+                elif event_type == "answer":
+                    # 完整回答（备用，用于非流式场景）
+                    content = event.get("content", "")
+                    if content:
+                        yield f"data: {json.dumps({'type': 'answer', 'data': content}, ensure_ascii=False)}\n\n"
+
+                elif event_type == "error":
+                    # 错误
+                    yield f"data: {json.dumps({'type': 'error', 'message': event.get('error', '未知错误')}, ensure_ascii=False)}\n\n"
+                    break
 
             # 完成
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
         except Exception as e:
-            logger.error(f"[LangGraph Stream] 错误: {e}")
+            logger.error(f"[Deep Agent Stream] 错误: {e}")
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(

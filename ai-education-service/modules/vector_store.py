@@ -30,12 +30,12 @@ class VectorStore:
         logger.info(f"DashVector 客户端初始化完成，collection: {self.collection_name}")
     
     def _get_collection(self):
-        """获取 collection（Ooo11 已在 DashVector 控制台创建）"""
+        """获取 collection（ces 已在 DashVector 控制台创建）"""
         if self._collection is not None:
             return self._collection
 
         # 直接获取已存在的 collection
-        # Collection: Ooo11, 维度: 1024, 度量: Cosine
+        # Collection: ces, 维度: 2048, 度量: Cosine
         self._collection = self.client.get(self.collection_name)
 
         if self._collection is None:

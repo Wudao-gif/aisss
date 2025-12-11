@@ -1,6 +1,7 @@
 """
 实体关系提取器
 从文档中提取实体和关系，存入 Neo4j 知识图谱
+支持 GraphRAG：提取实体后生成向量嵌入
 """
 
 import logging
@@ -13,6 +14,7 @@ import httpx
 
 from config import settings
 from .knowledge_graph import Entity, Relation, Chapter, ResourceSection, get_kg_store
+from .document_processor import get_embedding_model
 
 logger = logging.getLogger(__name__)
 
@@ -26,10 +28,11 @@ class ExtractionResult:
 
 
 class EntityExtractor:
-    """实体关系提取器"""
+    """实体关系提取器（支持 GraphRAG 向量嵌入）"""
 
     def __init__(self):
         self.chat_model = settings.CHAT_MODEL
+        self.embedding_model = get_embedding_model()
 
     async def extract_from_chunks(self, chunks: List[Dict], book_id: str) -> ExtractionResult:
         """从文档块中提取实体和关系（优化版：合并 chunks 减少 LLM 调用）"""
@@ -86,6 +89,11 @@ class EntityExtractor:
                 continue
 
         logger.info(f"提取完成: {len(all_entities)} 实体, {len(all_relations)} 关系")
+
+        # 为实体生成向量嵌入（GraphRAG）
+        if all_entities:
+            all_entities = await self._generate_entity_embeddings(all_entities)
+
         return ExtractionResult(
             entities=all_entities,
             relations=all_relations,
@@ -117,8 +125,8 @@ class EntityExtractor:
         try:
             async with httpx.AsyncClient(timeout=60.0) as client:
                 response = await client.post(
-                    f"{settings.OPENROUTER_BASE_URL}/chat/completions",
-                    headers={"Authorization": f"Bearer {settings.OPENROUTER_API_KEY}"},
+                    f"{settings.DASHSCOPE_BASE_URL}/chat/completions",
+                    headers={"Authorization": f"Bearer {settings.DASHSCOPE_API_KEY}"},
                     json={
                         "model": self.chat_model,
                         "messages": [{"role": "user", "content": prompt}],
@@ -178,6 +186,43 @@ class EntityExtractor:
         """生成稳定的实体 ID"""
         content = f"{book_id}:{name}"
         return hashlib.md5(content.encode()).hexdigest()[:16]
+
+    async def _generate_entity_embeddings(self, entities: List[Entity]) -> List[Entity]:
+        """
+        为实体生成向量嵌入（GraphRAG）
+
+        使用实体名称 + 类型作为嵌入文本
+        """
+        if not entities:
+            return entities
+
+        logger.info(f"开始为 {len(entities)} 个实体生成向量嵌入")
+
+        try:
+            # 构建嵌入文本：名称 + 类型
+            texts = [f"{e.name} ({e.type})" for e in entities]
+
+            # 批量生成 embedding
+            batch_size = self.embedding_model.embed_batch_size
+            all_embeddings = []
+
+            for i in range(0, len(texts), batch_size):
+                batch = texts[i:i + batch_size]
+                embeddings = self.embedding_model.get_text_embedding_batch(batch)
+                all_embeddings.extend(embeddings)
+                logger.debug(f"嵌入批次 {i // batch_size + 1} 完成")
+
+            # 将 embedding 附加到实体
+            for entity, embedding in zip(entities, all_embeddings):
+                entity.embedding = embedding
+
+            logger.info(f"实体向量嵌入生成完成: {len(entities)} 个")
+            return entities
+
+        except Exception as e:
+            logger.error(f"实体向量嵌入生成失败: {e}")
+            # 失败时返回原实体（无 embedding）
+            return entities
 
     async def save_to_neo4j(self, result: ExtractionResult) -> Dict[str, int]:
         """将提取结果保存到 Neo4j"""
@@ -270,8 +315,8 @@ async def analyze_resource_chapter_relations(chunks: List[Dict], book_id: str,
         try:
             async with httpx.AsyncClient(timeout=60.0) as client:
                 response = await client.post(
-                    f"{settings.OPENROUTER_BASE_URL}/chat/completions",
-                    headers={"Authorization": f"Bearer {settings.OPENROUTER_API_KEY}"},
+                    f"{settings.DASHSCOPE_BASE_URL}/chat/completions",
+                    headers={"Authorization": f"Bearer {settings.DASHSCOPE_API_KEY}"},
                     json={
                         "model": settings.CHAT_MODEL,
                         "messages": [{"role": "user", "content": prompt}],
@@ -279,7 +324,7 @@ async def analyze_resource_chapter_relations(chunks: List[Dict], book_id: str,
                     }
                 )
                 llm_result = response.json()["choices"][0]["message"]["content"]
-                
+
                 if "```" in llm_result:
                     llm_result = llm_result.split("```")[1].replace("json", "").strip()
                 parsed = json.loads(llm_result)
@@ -368,8 +413,8 @@ async def extract_book_chapters(toc_text: str, book_id: str) -> List[Chapter]:
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.post(
-                f"{settings.OPENROUTER_BASE_URL}/chat/completions",
-                headers={"Authorization": f"Bearer {settings.OPENROUTER_API_KEY}"},
+                f"{settings.DASHSCOPE_BASE_URL}/chat/completions",
+                headers={"Authorization": f"Bearer {settings.DASHSCOPE_API_KEY}"},
                 json={
                     "model": settings.CHAT_MODEL,
                     "messages": [{"role": "user", "content": prompt}],
@@ -511,8 +556,8 @@ async def analyze_resource_to_chapters(chunks: List[Dict], book_id: str,
         try:
             async with httpx.AsyncClient(timeout=60.0) as client:
                 response = await client.post(
-                    f"{settings.OPENROUTER_BASE_URL}/chat/completions",
-                    headers={"Authorization": f"Bearer {settings.OPENROUTER_API_KEY}"},
+                    f"{settings.DASHSCOPE_BASE_URL}/chat/completions",
+                    headers={"Authorization": f"Bearer {settings.DASHSCOPE_API_KEY}"},
                     json={
                         "model": settings.CHAT_MODEL,
                         "messages": [{"role": "user", "content": prompt}],
@@ -604,8 +649,8 @@ async def extract_resource_sections(chunks: List[Dict], resource_id: str) -> Lis
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.post(
-                f"{settings.OPENROUTER_BASE_URL}/chat/completions",
-                headers={"Authorization": f"Bearer {settings.OPENROUTER_API_KEY}"},
+                f"{settings.DASHSCOPE_BASE_URL}/chat/completions",
+                headers={"Authorization": f"Bearer {settings.DASHSCOPE_API_KEY}"},
                 json={
                     "model": settings.CHAT_MODEL,
                     "messages": [{"role": "user", "content": prompt}],
@@ -701,8 +746,8 @@ async def analyze_sections_to_chapters(sections: List[ResourceSection], book_id:
         try:
             async with httpx.AsyncClient(timeout=60.0) as client:
                 response = await client.post(
-                    f"{settings.OPENROUTER_BASE_URL}/chat/completions",
-                    headers={"Authorization": f"Bearer {settings.OPENROUTER_API_KEY}"},
+                    f"{settings.DASHSCOPE_BASE_URL}/chat/completions",
+                    headers={"Authorization": f"Bearer {settings.DASHSCOPE_API_KEY}"},
                     json={
                         "model": settings.CHAT_MODEL,
                         "messages": [{"role": "user", "content": prompt}],

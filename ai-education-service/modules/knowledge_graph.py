@@ -24,6 +24,7 @@ class Entity:
     type: str  # 如: Person, Concept, Book, Chapter
     properties: Dict[str, Any] = None
     book_id: Optional[str] = None  # 来源书籍
+    embedding: Optional[List[float]] = None  # 向量嵌入
 
 
 @dataclass
@@ -110,6 +111,24 @@ class KnowledgeGraphStore:
             await session.run(
                 "CREATE INDEX chapter_title IF NOT EXISTS FOR (c:Chapter) ON (c.title)"
             )
+
+            # 向量索引（Neo4j 5.11+ 支持）
+            try:
+                await session.run(
+                    """
+                    CREATE VECTOR INDEX entity_embedding IF NOT EXISTS
+                    FOR (e:Entity) ON (e.embedding)
+                    OPTIONS {indexConfig: {
+                        `vector.dimensions`: $dimensions,
+                        `vector.similarity_function`: 'cosine'
+                    }}
+                    """,
+                    dimensions=settings.EMBEDDING_DIMENSION
+                )
+                logger.info("Neo4j 向量索引创建完成")
+            except Exception as e:
+                logger.warning(f"向量索引创建失败（可能已存在或版本不支持）: {e}")
+
             logger.info("Neo4j 索引创建完成")
 
     async def close(self):
@@ -121,26 +140,44 @@ class KnowledgeGraphStore:
     # ============ 实体操作 ============
 
     async def add_entity(self, entity: Entity) -> str:
-        """添加实体"""
+        """添加实体（含向量嵌入）"""
         async with self.driver.session() as session:
-            result = await session.run(
-                """
-                MERGE (e:Entity {id: $id})
-                SET e.name = $name, e.type = $type, e.book_id = $book_id
-                SET e += $properties
-                RETURN e.id as id
-                """,
-                id=entity.id,
-                name=entity.name,
-                type=entity.type,
-                book_id=entity.book_id,
-                properties=entity.properties or {}
-            )
+            # 如果有 embedding，一起存储
+            if entity.embedding:
+                result = await session.run(
+                    """
+                    MERGE (e:Entity {id: $id})
+                    SET e.name = $name, e.type = $type, e.book_id = $book_id,
+                        e.embedding = $embedding
+                    SET e += $properties
+                    RETURN e.id as id
+                    """,
+                    id=entity.id,
+                    name=entity.name,
+                    type=entity.type,
+                    book_id=entity.book_id,
+                    embedding=entity.embedding,
+                    properties=entity.properties or {}
+                )
+            else:
+                result = await session.run(
+                    """
+                    MERGE (e:Entity {id: $id})
+                    SET e.name = $name, e.type = $type, e.book_id = $book_id
+                    SET e += $properties
+                    RETURN e.id as id
+                    """,
+                    id=entity.id,
+                    name=entity.name,
+                    type=entity.type,
+                    book_id=entity.book_id,
+                    properties=entity.properties or {}
+                )
             record = await result.single()
             return record["id"]
 
     async def add_entities_batch(self, entities: List[Entity]) -> int:
-        """批量添加实体"""
+        """批量添加实体（含向量嵌入）"""
         async with self.driver.session() as session:
             result = await session.run(
                 """
@@ -148,11 +185,15 @@ class KnowledgeGraphStore:
                 MERGE (e:Entity {id: ent.id})
                 SET e.name = ent.name, e.type = ent.type, e.book_id = ent.book_id
                 SET e += ent.properties
+                FOREACH (emb IN CASE WHEN ent.embedding IS NOT NULL THEN [ent.embedding] ELSE [] END |
+                    SET e.embedding = emb
+                )
                 RETURN count(e) as count
                 """,
                 entities=[{
                     "id": e.id, "name": e.name, "type": e.type,
-                    "book_id": e.book_id, "properties": e.properties or {}
+                    "book_id": e.book_id, "properties": e.properties or {},
+                    "embedding": e.embedding
                 } for e in entities]
             )
             record = await result.single()
@@ -196,6 +237,131 @@ class KnowledgeGraphStore:
             result = await session.run(cypher, **params)
             records = await result.data()
             return [dict(r["e"]) for r in records]
+
+    async def search_entities_by_vector(
+        self,
+        query_embedding: List[float],
+        book_id: str = None,
+        limit: int = 10,
+        min_score: float = 0.7
+    ) -> List[Dict]:
+        """
+        向量相似度检索实体
+
+        Args:
+            query_embedding: 查询向量
+            book_id: 可选，限制书籍范围
+            limit: 返回数量
+            min_score: 最小相似度阈值
+
+        Returns:
+            实体列表，包含相似度分数
+        """
+        async with self.driver.session() as session:
+            if book_id:
+                result = await session.run(
+                    """
+                    CALL db.index.vector.queryNodes('entity_embedding', $limit, $embedding)
+                    YIELD node, score
+                    WHERE node.book_id = $book_id AND score >= $min_score
+                    RETURN node, score
+                    ORDER BY score DESC
+                    """,
+                    embedding=query_embedding,
+                    book_id=book_id,
+                    limit=limit * 2,  # 多查一些，因为要过滤
+                    min_score=min_score
+                )
+            else:
+                result = await session.run(
+                    """
+                    CALL db.index.vector.queryNodes('entity_embedding', $limit, $embedding)
+                    YIELD node, score
+                    WHERE score >= $min_score
+                    RETURN node, score
+                    ORDER BY score DESC
+                    """,
+                    embedding=query_embedding,
+                    limit=limit,
+                    min_score=min_score
+                )
+
+            records = await result.data()
+            return [{"entity": dict(r["node"]), "score": r["score"]} for r in records[:limit]]
+
+    async def search_with_graph_expansion(
+        self,
+        query_embedding: List[float],
+        book_id: str = None,
+        limit: int = 5,
+        expansion_depth: int = 1
+    ) -> Dict[str, Any]:
+        """
+        GraphRAG: 向量检索 + 图遍历扩展
+
+        1. 向量检索找到相关实体
+        2. 图遍历扩展关联实体
+        3. 返回结构化知识上下文
+        """
+        # 1. 向量检索
+        vector_results = await self.search_entities_by_vector(
+            query_embedding=query_embedding,
+            book_id=book_id,
+            limit=limit
+        )
+
+        if not vector_results:
+            return {"entities": [], "relations": [], "context": ""}
+
+        # 2. 图遍历扩展
+        entity_ids = [r["entity"]["id"] for r in vector_results]
+        expanded_entities = []
+        relations = []
+
+        async with self.driver.session() as session:
+            for entity_id in entity_ids:
+                # 获取关联实体
+                result = await session.run(
+                    f"""
+                    MATCH (e:Entity {{id: $id}})-[r]-(related:Entity)
+                    RETURN e, r, related
+                    LIMIT {expansion_depth * 5}
+                    """,
+                    id=entity_id
+                )
+                records = await result.data()
+
+                for record in records:
+                    related = dict(record["related"])
+                    if related["id"] not in [e.get("id") for e in expanded_entities]:
+                        expanded_entities.append(related)
+
+                    rel = record["r"]
+                    relations.append({
+                        "source": record["e"]["name"],
+                        "target": related["name"],
+                        "type": rel.get("type", "RELATES_TO")
+                    })
+
+        # 3. 构建上下文
+        primary_entities = [r["entity"] for r in vector_results]
+        all_entities = primary_entities + expanded_entities
+
+        context_parts = []
+        for e in primary_entities:
+            context_parts.append(f"【{e.get('type', '概念')}】{e.get('name', '')}")
+
+        if relations:
+            context_parts.append("\n关联知识：")
+            for rel in relations[:10]:
+                context_parts.append(f"  - {rel['source']} --[{rel['type']}]--> {rel['target']}")
+
+        return {
+            "entities": all_entities,
+            "relations": relations,
+            "context": "\n".join(context_parts),
+            "scores": {r["entity"]["id"]: r["score"] for r in vector_results}
+        }
 
     # ============ 章节操作 ============
 
@@ -587,8 +753,8 @@ class KnowledgeGraphStore:
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.post(
-                    f"{settings.OPENROUTER_BASE_URL}/chat/completions",
-                    headers={"Authorization": f"Bearer {settings.OPENROUTER_API_KEY}"},
+                    f"{settings.DASHSCOPE_BASE_URL}/chat/completions",
+                    headers={"Authorization": f"Bearer {settings.DASHSCOPE_API_KEY}"},
                     json={
                         "model": settings.CHAT_MODEL,
                         "messages": [{"role": "user", "content": prompt}],

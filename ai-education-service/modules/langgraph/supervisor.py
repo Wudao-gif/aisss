@@ -15,7 +15,6 @@ import httpx
 from config import settings
 from .state import AgentState, IntentType, TaskType, MemoryType, EvidenceSource
 from .message_utils import get_recent_context, trim_conversation_history
-from .memory_store import get_memory_manager
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +34,15 @@ class SupervisorAgent:
     """Supervisor 智能体"""
 
     def __init__(self):
-        self.chat_model = settings.CHAT_MODEL
+        # 根据 CHAT_PROVIDER 选择模型和 API
+        if settings.CHAT_PROVIDER == "dashscope":
+            self.chat_model = settings.CHAT_MODEL
+            self.api_base_url = settings.DASHSCOPE_BASE_URL
+            self.api_key = settings.DASHSCOPE_API_KEY
+        else:
+            self.chat_model = settings.OPENROUTER_CHAT_MODEL
+            self.api_base_url = settings.OPENROUTER_BASE_URL
+            self.api_key = settings.OPENROUTER_API_KEY
 
     # ==================== 入口阶段 ====================
 
@@ -101,17 +108,7 @@ class SupervisorAgent:
         query = state.get("query", "")
 
         long_term_memory = ""
-        memory_manager = get_memory_manager()
-        if memory_manager:
-            try:
-                context = await memory_manager.get_user_context(
-                    user_id=user_id,
-                    book_id=book_id,
-                    query=query
-                )
-                long_term_memory = memory_manager.format_context_for_prompt(context)
-            except Exception as e:
-                logger.warning(f"获取长期记忆失败: {e}")
+        # TODO: 长期记忆功能待接入
 
         # 获取对话摘要（会话内压缩）
         summary = state.get("summary", "")
@@ -176,9 +173,9 @@ class SupervisorAgent:
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.post(
-                    f"{settings.OPENROUTER_BASE_URL}/chat/completions",
+                    f"{self.api_base_url}/chat/completions",
                     headers={
-                        "Authorization": f"Bearer {settings.OPENROUTER_API_KEY}",
+                        "Authorization": f"Bearer {self.api_key}",
                         "Content-Type": "application/json",
                     },
                     json={
@@ -402,46 +399,9 @@ class SupervisorAgent:
     async def _update_long_term_memory(self, state: AgentState) -> None:
         """
         更新长期记忆
-        从对话中提取用户信息并存储到 LangGraph Store
+        TODO: 待接入 tools/memory.py
         """
-        memory_manager = get_memory_manager()
-        if not memory_manager:
-            logger.debug("MemoryManager 未初始化，跳过长期记忆更新")
-            return
-
-        user_id = state.get("user_id", "anonymous")
-        book_id = state.get("book_id", "default")
-        query = state.get("query", "")
-        answer = state.get("final_answer", "")
-
-        try:
-            # 使用 LLM 提取需要记住的信息
-            facts = await self._extract_facts_from_conversation(query, answer)
-
-            # 存储提取的事实
-            for fact in facts:
-                await memory_manager.store_user_fact(
-                    user_id=user_id,
-                    fact_type=fact.get("type", "general"),
-                    fact_value=fact.get("value", ""),
-                    source="conversation"
-                )
-
-            # 记录学习事件
-            intent = state.get("intent", "")
-            if intent in ["concept_explain", "homework_help", "exercise_practice"]:
-                await memory_manager.log_learning_event(
-                    user_id=user_id,
-                    book_id=book_id,
-                    event_type="question",
-                    content=query,
-                    result=answer[:200]  # 只保存前200字符
-                )
-
-            logger.debug(f"长期记忆更新完成: user={user_id}, facts={len(facts)}")
-
-        except Exception as e:
-            logger.warning(f"更新长期记忆失败: {e}")
+        pass
 
     async def _extract_facts_from_conversation(
         self,

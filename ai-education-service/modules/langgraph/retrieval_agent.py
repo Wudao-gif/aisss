@@ -20,7 +20,6 @@ from langchain_core.messages import AIMessage, ToolMessage, HumanMessage
 from config import settings
 from .state import AgentState, MemoryType, EvidenceSource
 from .tools import retrieve_from_textbook, search_knowledge_graph, retrieval_tools
-from .memory_store import get_memory_manager
 
 logger = logging.getLogger(__name__)
 
@@ -258,45 +257,10 @@ class RetrievalAgent:
         return "\n\n".join(results)
 
     async def _fetch_required_memories(self, state: AgentState) -> None:
-        """获取所需的记忆（使用 LangGraph Store）"""
-        required = state.get("required_memories", [])
-
-        if not required:
-            logger.info("不需要获取记忆")
-            return
-
-        memory_manager = get_memory_manager()
-        if not memory_manager:
-            logger.warning("MemoryManager 未初始化，跳过记忆获取")
-            return
-
-        try:
-            user_id = state.get("user_id", "anonymous")
-            book_id = state.get("book_id", "default")
-            query = state.get("query", "")
-
-            # 获取用户上下文
-            context = await memory_manager.get_user_context(
-                user_id=user_id,
-                book_id=book_id,
-                query=query
-            )
-
-            if MemoryType.PROFILE.value in required and context.get("profile"):
-                state["user_profile"] = context["profile"]
-                logger.info("已获取用户画像")
-
-            if MemoryType.UNDERSTANDING.value in required and context.get("understanding"):
-                state["user_understanding"] = context["understanding"]
-                logger.info("已获取知识理解")
-
-            # 将事实也作为用户信息
-            if context.get("facts"):
-                state["user_facts"] = context["facts"]
-                logger.info(f"已获取用户事实: {len(context['facts'])} 条")
-
-        except Exception as e:
-            logger.warning(f"获取记忆失败: {e}")
+        """获取所需的记忆
+        TODO: 待接入 tools/memory.py
+        """
+        pass
 
     def _update_task_status(self, state: AgentState, status: str) -> None:
         """更新任务计划中的状态"""

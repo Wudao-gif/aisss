@@ -1,7 +1,7 @@
 """
 记忆向量存储模块
-专门用于存储用户长期记忆到 DashVector (changqijiyi Collection)
-与教材向量库 (Ooo11) 完全独立
+专门用于存储用户长期记忆到 DashVector (jiyi Collection)
+与教材向量库 (ces) 完全独立
 """
 
 import logging

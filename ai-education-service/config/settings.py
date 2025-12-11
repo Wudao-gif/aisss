@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     APP_NAME: str = "AI Education Service"
     APP_VERSION: str = "1.0.0"
     DEBUG: bool = False
-    API_PREFIX: str = "/api"
+    API_PREFIX: str = "/api/v4"
     
     # API认证配置
     API_KEY: Optional[str] = None  # 用于验证来自现有后端的请求
@@ -36,7 +36,7 @@ class Settings(BaseSettings):
     # Embedding模型配置
     EMBEDDING_PROVIDER: str = "openrouter"  # 可选: "openrouter" 或 "dashscope"
     EMBEDDING_MODEL: str = "openai/text-embedding-3-small"  # OpenRouter 模型
-    EMBEDDING_DIMENSION: int = 1024  # DashVector Collection Ooo11 配置的维度
+    EMBEDDING_DIMENSION: int = 2048  # DashVector Collection ces 配置的维度
     EMBEDDING_BATCH_SIZE: int = 10  # 批次大小
 
     # DashScope Embedding 配置 (用于 qwen2.5-vl-embedding 等阿里云模型)
@@ -53,7 +53,7 @@ class Settings(BaseSettings):
     # 华北3(张家口) 集群: Dao123_
     DASHVECTOR_API_KEY: str
     DASHVECTOR_ENDPOINT: str  # 格式: vrs-cn-xxx.dashvector.cn-zhangjiakou.aliyuncs.com
-    DASHVECTOR_COLLECTION: str = "Ooo11"  # 集合名称，1024维，Cosine度量
+    DASHVECTOR_COLLECTION: str = "ces"  # 集合名称，2048维，Cosine度量
     
     # ==================== LlamaIndex 配置 ====================
     # 文档分块配置

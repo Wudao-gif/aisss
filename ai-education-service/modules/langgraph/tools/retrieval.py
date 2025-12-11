@@ -1,7 +1,7 @@
 """
-LangGraph 检索工具
-按照 LangGraph Agentic RAG 文档实现
-让 LLM 决定是否调用检索工具
+检索工具
+- retrieve_from_textbook: 从教材向量库检索
+- search_knowledge_graph: 从知识图谱搜索
 
 参考: https://docs.langchain.com/oss/python/langgraph/agentic-rag
 """
@@ -156,6 +156,6 @@ async def search_knowledge_graph(query: str, book_id: str) -> str:
         return f"知识图谱搜索失败: {str(e)}"
 
 
-# 导出所有工具
+# 导出工具列表
 retrieval_tools = [retrieve_from_textbook, search_knowledge_graph]
 
