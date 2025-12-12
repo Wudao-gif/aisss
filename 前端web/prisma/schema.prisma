@@ -1,0 +1,471 @@
+// Prisma Schema for Brillance
+// Database: PostgreSQL
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// 用户表
+model User {
+  id            String   @id @default(uuid())
+  email         String?  @unique  // 邮箱（可选，用户可以只用手机号注册）
+  phone         String?  @unique  // 手机号（可选，用户可以只用邮箱注册）
+  password      String?           // 密码（可选，支持验证码登录）
+  realName      String?  @map("real_name")  // 真实姓名（可选，后续完善）
+  avatar        String?           // 头像 URL
+  university    String?           // 大学（可选，后续完善）
+  wechatOpenId  String?  @unique @map("wechat_open_id")
+  role          String   @default("user") // 'user' or 'admin'
+  isBanned      Boolean  @default(false) @map("is_banned")
+  lastLoginIp   String?  @map("last_login_ip")   // 最后登录 IP
+  lastLoginCity String?  @map("last_login_city") // 最后登录城市
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  // 关系
+  bookshelf       BookshelfItem[]
+  conversations   Conversation[]
+  plans           Plan[]  // 用户的学习计划
+  planFiles       PlanFile[]  // 用户上传到计划的文件
+  profile         UserProfile?  // 用户画像
+  understandings  UserUnderstanding[]  // 知识点理解记忆
+  learnings       UserLearning[]  // 学习轨迹记忆
+
+  @@map("users")
+}
+
+// 大学表
+model University {
+  id            String         @id @default(uuid())
+  name          String         @unique
+  logoUrl       String?        @map("logo_url")
+
+  // 空白模板开关（控制该大学是否启用各类型的空白模板）
+  enableWordBlank   Boolean @default(true) @map("enable_word_blank")   // Word 空白模板
+  enableExcelBlank  Boolean @default(true) @map("enable_excel_blank")  // Excel 空白模板
+  enablePptBlank    Boolean @default(true) @map("enable_ppt_blank")    // PPT 空白模板
+
+  createdAt     DateTime       @default(now()) @map("created_at")
+
+  // 关系
+  bookResources BookResource[] // 大学的图书资源
+
+  @@map("universities")
+}
+
+// 图书表（全局，不绑定大学）
+model Book {
+  id           String   @id @default(uuid())
+  name         String
+  author       String
+  isbn         String   @unique
+  publisher    String
+  coverUrl     String?  @map("cover_url")
+  fileUrl      String?  @map("file_url")      // 图书文件 URL（PDF等）
+  fileSize     Int?     @map("file_size")     // 文件大小（字节）
+  allowReading Boolean  @default(false) @map("allow_reading")  // 是否允许在线阅读
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @default(now()) @updatedAt @map("updated_at")
+
+  // 关系
+  bookshelf      BookshelfItem[]
+  resources      BookResourceRelation[]  // 多对多关系：一个教材可以有多个资源
+  conversations  Conversation[]          // 教材相关的对话
+  understandings UserUnderstanding[]     // 用户对该教材知识点的理解
+  learnings      UserLearning[]          // 用户在该教材的学习轨迹
+
+  @@map("books")
+}
+
+// 图书资源表（资料列表，可绑定多个教材）
+model BookResource {
+  id           String   @id @default(uuid())
+  universityId String   @map("university_id")  // 绑定大学
+  name         String   // 资源名称
+  description  String?  // 资源描述
+  fileUrl      String   @map("file_url")  // 文件 URL
+  fileType     String   @map("file_type") // 文件类型（pdf, doc, ppt等）
+  fileSize     Int      @map("file_size") // 文件大小（字节）
+  allowReading Boolean  @default(false) @map("allow_reading")  // 是否允许在线阅读
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  // 关系
+  university   University @relation(fields: [universityId], references: [id])
+  books        BookResourceRelation[]  // 多对多关系：一个资源可以绑定多个教材
+  bookshelfResources BookshelfResource[]  // 用户书架中的资源快照
+
+  @@map("book_resources")
+}
+
+// 图书-资源关联表（多对多）
+model BookResourceRelation {
+  id           String   @id @default(uuid())
+  bookId       String   @map("book_id")
+  resourceId   String   @map("resource_id")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  // 关系
+  book         Book         @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  resource     BookResource @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+
+  @@unique([bookId, resourceId])
+  @@map("book_resource_relations")
+}
+
+// 书架表（用户收藏的图书）
+model BookshelfItem {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  bookId    String   @map("book_id")
+  addedAt   DateTime @default(now()) @map("added_at")
+
+  // 关系
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  book      Book     @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  resources BookshelfResource[]  // 用户书架中的资源快照
+
+  @@unique([userId, bookId])
+  @@map("bookshelf")
+}
+
+// 用户上传资源表（永久存储，只有管理员可以删除）
+model UserUploadedResource {
+  id              String   @id @default(uuid())
+  userId          String   @map("user_id")  // 上传者
+  name            String   // 资源名称
+  description     String?  // 资源描述
+  fileUrl         String   @map("file_url")  // 文件 URL
+  fileType        String   @map("file_type") // 文件类型
+  fileSize        Int      @map("file_size") // 文件大小
+  allowReading    Boolean  @default(true) @map("allow_reading")  // 是否允许阅读
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  // 关系
+  bookshelfResources BookshelfResource[]  // 用户书架中引用此资源的记录
+
+  @@map("user_uploaded_resources")
+}
+
+// 书架资源表（用户书架中的资源快照 + 用户上传资源的引用）
+model BookshelfResource {
+  id                    String   @id @default(uuid())
+  bookshelfItemId       String   @map("bookshelf_item_id")  // 所属书架项
+  resourceId            String?  @map("resource_id")  // 官方资源ID（如果是官方资源）
+  userUploadedResourceId String? @map("user_uploaded_resource_id")  // 用户上传资源ID（如果是用户上传）
+  userId                String   @map("user_id")  // 资源所有者
+  name                  String   // 资源名称
+  description           String?  // 资源描述
+  fileUrl               String   @map("file_url")  // 文件 URL
+  fileType              String   @map("file_type") // 文件类型
+  fileSize              Int      @map("file_size") // 文件大小
+  allowReading          Boolean  @default(true) @map("allow_reading")  // 是否允许阅读
+  isUserUploaded        Boolean  @default(false) @map("is_user_uploaded")  // 是否用户上传
+  createdAt             DateTime @default(now()) @map("created_at")
+
+  // 关系
+  bookshelfItem         BookshelfItem @relation(fields: [bookshelfItemId], references: [id], onDelete: Cascade)
+  resource              BookResource? @relation(fields: [resourceId], references: [id], onDelete: SetNull)
+  userUploadedResource  UserUploadedResource? @relation(fields: [userUploadedResourceId], references: [id], onDelete: SetNull)
+
+  @@map("bookshelf_resources")
+}
+
+// 对话表（绑定教材）
+model Conversation {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  bookId    String   @map("book_id")          // 关联的教材（必填）
+  title     String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // 关系
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  book      Book      @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  messages  Message[]
+
+  @@index([userId])
+  @@index([bookId])
+  @@index([userId, bookId])
+  @@map("conversations")
+}
+
+// 消息表
+model Message {
+  id             String   @id @default(uuid())
+  conversationId String   @map("conversation_id")
+  role           String   // 'user' | 'assistant' | 'system'
+  content        String   @db.Text
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  // 关系
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  attachments    MessageAttachment[]
+
+  @@index([conversationId])
+  @@map("messages")
+}
+
+// 消息附件表（图片、文件）
+model MessageAttachment {
+  id        String   @id @default(uuid())
+  messageId String   @map("message_id")
+  type      String   // 'image' | 'file'
+  name      String   // 文件名
+  url       String   // 文件 URL（OSS 地址）
+  fileSize  Int?     @map("file_size")   // 文件大小（字节）
+  mimeType  String?  @map("mime_type")   // MIME 类型
+  createdAt DateTime @default(now()) @map("created_at")
+
+  // 关系
+  message   Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@index([messageId])
+  @@map("message_attachments")
+}
+
+// 学习计划表
+model Plan {
+  id          String   @id @default(uuid())
+  userId      String   @map("user_id")
+  name        String
+  description String?  @db.Text
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  // 关系
+  user        User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  files       PlanFile[] // 计划中的文件
+
+  @@map("plans")
+}
+
+// 计划文件表
+model PlanFile {
+  id          String   @id @default(uuid())
+  planId      String   @map("plan_id")
+  userId      String   @map("user_id")
+  name        String
+  description String?  @db.Text
+  fileUrl     String   @map("file_url")
+  fileType    String   @map("file_type")  // pdf, docx, pptx, etc.
+  fileSize    Int      @map("file_size")  // 文件大小（字节）
+  allowReading Boolean @default(true) @map("allow_reading")  // 是否允许在线阅读
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  // 关系
+  plan        Plan     @relation(fields: [planId], references: [id], onDelete: Cascade)
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("plan_files")
+}
+
+// 文档模板表
+model DocTemplate {
+  id          String   @id @default(uuid())
+  name        String   // 模板名称
+  type        String   // 模板类型：word, excel, ppt
+  category    String   // 使用场景：实验报告、课程论文、商业计划书等
+  description String?  @db.Text  // 模板描述
+  fileUrl     String   @map("file_url")  // OSS 文件 URL
+  fileSize    Int      @map("file_size")  // 文件大小（字节）
+  iconUrl     String?  @map("icon_url")  // 模板图标 URL（公共 Bucket）
+  university  String?  // 绑定的大学（null表示所有大学可用）
+  isEnabled   Boolean  @default(true) @map("is_enabled")  // 是否启用
+  isDefault   Boolean  @default(false) @map("is_default")  // 是否为该类别的默认模板
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@map("doc_templates")
+}
+
+// 文件图标表
+model FileIcon {
+  id          String   @id @default(uuid())
+  name        String   // 图标名称（如：Word文档、Excel表格）
+  extensions  String   // 支持的文件扩展名，逗号分隔（如：doc,docx）
+  iconUrl     String   @map("icon_url")  // 图标 URL
+  isDefault   Boolean  @default(false) @map("is_default")  // 是否为默认图标（用于未匹配的文件）
+  sortOrder   Int      @default(0) @map("sort_order")  // 排序顺序
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@map("file_icons")
+}
+
+// 应用图标资源表
+model IconResource {
+  id        String   @id @default(uuid())
+  name      String   // 图标名称
+  category  String   // 分类：university（大学图标）、filetype（文件类型图标）、other（其他）
+  iconUrl   String   @map("icon_url")  // OSS 图标 URL（公共 Bucket）
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("icon_resources")
+}
+
+// AI供应商表
+model AIProvider {
+  id          String    @id @default(uuid())
+  name        String    // 供应商显示名称（如：OpenAI、Anthropic、xAI）
+  code        String    @unique // 供应商代码（如：openai、anthropic、xai）
+  icon        String?   // 供应商图标URL（上传到OSS）
+  description String?   // 供应商描述
+  isEnabled   Boolean   @default(true) @map("is_enabled")
+  sortOrder   Int       @default(0) @map("sort_order")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  models      AIModel[] // 关联的模型列表
+
+  @@map("ai_providers")
+}
+
+// AI模型配置表
+model AIModel {
+  id          String     @id @default(uuid())
+  name        String     // 模型显示名称（如：GPT-4o、Claude 3.5）
+  modelId     String     @unique @map("model_id")  // OpenRouter模型ID（如：openai/gpt-4o）
+  description String?    // 模型描述
+  isEnabled   Boolean    @default(true) @map("is_enabled")
+  isDefault   Boolean    @default(false) @map("is_default")
+  sortOrder   Int        @default(0) @map("sort_order")
+  createdAt   DateTime   @default(now()) @map("created_at")
+  updatedAt   DateTime   @updatedAt @map("updated_at")
+
+  providerId  String     @map("provider_id")  // 关联供应商ID
+  provider    AIProvider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+
+  @@map("ai_models")
+}
+
+// 验证码表（支持邮箱和手机号）
+model VerificationCode {
+  id        String   @id @default(uuid())
+  email     String?  // 邮箱地址（邮箱验证码时使用）
+  phone     String?  // 手机号（短信验证码时使用）
+  code      String   // 6位验证码
+  type      String   @default("login") // 验证码类型：login（登录）、register（注册）、reset（重置密码）
+  channel   String   @default("email") // 发送渠道：email（邮箱）、sms（短信）
+  expiresAt DateTime @map("expires_at") // 过期时间
+  isUsed    Boolean  @default(false) @map("is_used") // 是否已使用
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([email, code])
+  @@index([email, createdAt])
+  @@index([phone, code])
+  @@index([phone, createdAt])
+  @@map("verification_codes")
+}
+
+// PDF 高亮表（用户在 PDF 中的高亮标注）
+model PdfHighlight {
+  id          String   @id @default(uuid())
+  userId      String   @map("user_id")      // 用户ID
+  bookId      String?  @map("book_id")      // 图书ID（可选，用于图书阅读）
+  fileUrl     String   @map("file_url")     // PDF 文件路径（用于非图书文件）
+  pageIndex   Int      @map("page_index")   // 页码（从0开始）
+  content     String   @db.Text             // 高亮的文本内容
+  color       String   @default("#FFEB3B")  // 高亮颜色
+  // 高亮区域坐标（JSON 格式存储多个矩形区域）
+  highlightAreas Json  @map("highlight_areas")
+  note        String?  @db.Text             // 用户笔记（可选）
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@index([userId])
+  @@index([userId, bookId])
+  @@index([userId, fileUrl])
+  @@map("pdf_highlights")
+}
+
+// ==================== 用户记忆系统 ====================
+
+// 用户画像表 (Letta profile 类型)
+model UserProfile {
+  id                      String   @id @default(uuid())
+  userId                  String   @unique @map("user_id")
+
+  // 基础画像 (Identity) - 与 Letta 输出对应
+  grade                   String?  // 年级：大一、大二、大三、大四、研一等
+  university              String?  // 学校
+  major                   String?  // 专业
+  age                     Int?     // 年龄
+  learningGoal            String?  @map("learning_goal")  // 学习目标
+  examDeadline            DateTime? @map("exam_deadline") // 考试截止日期
+  languagePreference      String   @default("中文") @map("language_preference")
+  tonePreference          String?  @map("tone_preference")  // 语气偏好：正式、轻松等
+  learningStylePreference String?  @map("learning_style_preference")  // 学习风格偏好
+
+  // Letta 记忆元数据
+  memoryText              String?  @map("memory_text") @db.Text  // Letta 生成的记忆文本
+
+  createdAt               DateTime @default(now()) @map("created_at")
+  updatedAt               DateTime @updatedAt @map("updated_at")
+
+  // 关系
+  user                    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_profiles")
+}
+
+// 用户知识理解记忆表 (Letta understanding 类型)
+model UserUnderstanding {
+  id                    String   @id @default(uuid())
+  userId                String   @map("user_id")
+  bookId                String   @map("book_id")  // 必填，绑定教材
+
+  // 知识点信息 - 与 Letta 输出对应
+  topic                 String   // 知识点名称
+  understood            String[] // 已理解的内容（数组）
+  notUnderstood         String[] @map("not_understood") // 未理解的内容（数组）
+
+  // Letta 记忆元数据
+  memoryText            String?  @map("memory_text") @db.Text  // Letta 生成的记忆文本
+  vectorId              String?  @map("vector_id")  // DashVector 文档 ID
+
+  createdAt             DateTime @default(now()) @map("created_at")
+  updatedAt             DateTime @updatedAt @map("updated_at")
+
+  // 关系
+  user                  User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  book                  Book     @relation(fields: [bookId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, bookId, topic])
+  @@index([userId])
+  @@index([userId, bookId])
+  @@index([topic])
+  @@map("user_understandings")
+}
+
+// 用户学习轨迹记忆表 (Letta learning_track 类型)
+model UserLearning {
+  id                    String   @id @default(uuid())
+  userId                String   @map("user_id")
+  bookId                String   @map("book_id")  // 必填，绑定教材
+
+  // 学习轨迹信息 - 与 Letta 输出对应
+  topic                 String   // 知识点名称
+  questionType          String   @map("question_type")  // concept | example | exercise | other
+
+  // Letta 记忆元数据
+  memoryText            String?  @map("memory_text") @db.Text  // Letta 生成的记忆文本
+  vectorId              String?  @map("vector_id")  // DashVector 文档 ID
+
+  createdAt             DateTime @default(now()) @map("created_at")
+
+  // 关系
+  user                  User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  book                  Book     @relation(fields: [bookId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([userId, bookId])
+  @@index([topic])
+  @@map("user_learnings")
+}

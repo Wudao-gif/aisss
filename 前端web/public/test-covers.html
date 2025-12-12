@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>封面测试页面</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      max-width: 1200px;
+      margin: 50px auto;
+      padding: 20px;
+      background: #f5f5f5;
+    }
+    h1 {
+      color: #333;
+    }
+    .card {
+      background: white;
+      border-radius: 8px;
+      padding: 20px;
+      margin-bottom: 20px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    .books-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(205px, 1fr));
+      gap: 20px;
+      margin-top: 20px;
+    }
+    .book-item {
+      background: white;
+      border-radius: 8px;
+      padding: 15px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    .book-cover {
+      width: 205px;
+      height: 315px;
+      object-fit: cover;
+      border-radius: 4px;
+      margin-bottom: 10px;
+    }
+    .book-info {
+      font-size: 14px;
+      color: #666;
+    }
+    .book-title {
+      font-weight: bold;
+      color: #333;
+      margin-bottom: 5px;
+    }
+    .url-display {
+      font-size: 12px;
+      color: #999;
+      word-break: break-all;
+      margin-top: 5px;
+      padding: 5px;
+      background: #f8f9fa;
+      border-radius: 4px;
+    }
+    button {
+      background: #007bff;
+      color: white;
+      border: none;
+      padding: 10px 20px;
+      border-radius: 4px;
+      cursor: pointer;
+      margin-right: 10px;
+    }
+    button:hover {
+      background: #0056b3;
+    }
+    .status {
+      padding: 10px;
+      border-radius: 4px;
+      margin: 10px 0;
+    }
+    .success {
+      background: #d4edda;
+      color: #155724;
+    }
+    .error {
+      background: #f8d7da;
+      color: #721c24;
+    }
+    .loading {
+      background: #fff3cd;
+      color: #856404;
+    }
+  </style>
+</head>
+<body>
+  <h1>📚 封面测试页面</h1>
+
+  <div class="card">
+    <h2>🔍 测试说明</h2>
+    <p>这个页面会直接从数据库获取图书数据并显示封面。</p>
+    <p>如果这里能看到封面，说明数据库是正确的，问题可能在前端页面的缓存。</p>
+    <button onclick="loadBooks()">刷新图书列表</button>
+    <button onclick="clearCache()">清除缓存并刷新</button>
+  </div>
+
+  <div class="card">
+    <h2>📊 加载状态</h2>
+    <div id="status"></div>
+  </div>
+
+  <div class="card">
+    <h2>📖 图书列表</h2>
+    <div id="books-container" class="books-grid"></div>
+  </div>
+
+  <script>
+    async function loadBooks() {
+      const statusDiv = document.getElementById('status')
+      const booksContainer = document.getElementById('books-container')
+
+      statusDiv.innerHTML = '<div class="status loading">⏳ 正在加载图书数据...</div>'
+      booksContainer.innerHTML = ''
+
+      try {
+        const response = await fetch('/api/books')
+        const data = await response.json()
+
+        if (!data.success) {
+          statusDiv.innerHTML = `<div class="status error">❌ 加载失败: ${data.message}</div>`
+          return
+        }
+
+        const books = data.data || []
+        
+        if (books.length === 0) {
+          statusDiv.innerHTML = '<div class="status error">❌ 数据库中没有图书数据</div>'
+          return
+        }
+
+        statusDiv.innerHTML = `<div class="status success">✅ 成功加载 ${books.length} 本图书</div>`
+
+        // 显示图书
+        books.forEach((book, index) => {
+          const coverUrl = book.coverUrl || book.cover || '/placeholder.svg'
+          
+          const bookDiv = document.createElement('div')
+          bookDiv.className = 'book-item'
+          bookDiv.innerHTML = `
+            <img 
+              src="${coverUrl}" 
+              alt="${book.name}"
+              class="book-cover"
+              onerror="this.style.border='2px solid red'; this.alt='❌ 加载失败'"
+              onload="this.style.border='2px solid green'"
+            >
+            <div class="book-title">${index + 1}. ${book.name}</div>
+            <div class="book-info">作者: ${book.author}</div>
+            <div class="book-info">ISBN: ${book.isbn}</div>
+            <div class="url-display">
+              <strong>封面URL:</strong><br>
+              ${coverUrl}
+            </div>
+            <div style="margin-top: 10px;">
+              <button onclick="testImage('${coverUrl}', '${book.name}')">测试图片</button>
+            </div>
+          `
+          booksContainer.appendChild(bookDiv)
+        })
+
+      } catch (error) {
+        statusDiv.innerHTML = `<div class="status error">❌ 请求失败: ${error.message}</div>`
+        console.error('加载图书失败:', error)
+      }
+    }
+
+    function testImage(url, name) {
+      const img = new Image()
+      img.onload = function() {
+        alert(`✅ 图片加载成功！\n\n书名: ${name}\n尺寸: ${this.width} × ${this.height}`)
+      }
+      img.onerror = function() {
+        alert(`❌ 图片加载失败！\n\n书名: ${name}\nURL: ${url}\n\n可能的原因:\n1. URL 不可访问\n2. 网络问题\n3. 跨域限制`)
+      }
+      img.src = url
+    }
+
+    function clearCache() {
+      if (confirm('确定要清除缓存并刷新页面吗？')) {
+        // 清除缓存的方法
+        if ('caches' in window) {
+          caches.keys().then(function(names) {
+            for (let name of names) {
+              caches.delete(name)
+            }
+          })
+        }
+        
+        // 强制刷新
+        window.location.reload(true)
+      }
+    }
+
+    // 页面加载时自动加载图书
+    loadBooks()
+  </script>
+</body>
+</html>
+

@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>认证测试页面</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      max-width: 900px;
+      margin: 50px auto;
+      padding: 20px;
+      background: #f5f5f5;
+    }
+    .card {
+      background: white;
+      border-radius: 8px;
+      padding: 20px;
+      margin-bottom: 20px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    h1, h2 { color: #333; }
+    button {
+      background: #007bff;
+      color: white;
+      border: none;
+      padding: 10px 20px;
+      border-radius: 4px;
+      cursor: pointer;
+      margin: 5px;
+    }
+    button:hover { background: #0056b3; }
+    button.danger { background: #dc3545; }
+    button.danger:hover { background: #c82333; }
+    button.success { background: #28a745; }
+    button.success:hover { background: #218838; }
+    input {
+      padding: 8px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      margin: 5px;
+      width: 200px;
+    }
+    .status {
+      padding: 10px;
+      border-radius: 4px;
+      margin: 10px 0;
+    }
+    .success { background: #d4edda; color: #155724; }
+    .error { background: #f8d7da; color: #721c24; }
+    .info { background: #d1ecf1; color: #0c5460; }
+    pre {
+      background: #f8f9fa;
+      padding: 10px;
+      border-radius: 4px;
+      overflow-x: auto;
+      font-size: 12px;
+    }
+    .label {
+      font-weight: bold;
+      margin-top: 10px;
+      display: block;
+    }
+  </style>
+</head>
+<body>
+  <h1>🔐 认证测试页面</h1>
+
+  <div class="card">
+    <h2>📋 当前状态</h2>
+    <div id="current-status"></div>
+    <button onclick="checkStatus()">刷新状态</button>
+    <button class="danger" onclick="clearAll()">清除所有数据</button>
+  </div>
+
+  <div class="card">
+    <h2>🔑 登录测试</h2>
+    <div>
+      <label class="label">邮箱:</label>
+      <input type="email" id="email" value="test@example.com" placeholder="邮箱">
+      <br>
+      <label class="label">密码:</label>
+      <input type="password" id="password" value="password123" placeholder="密码">
+      <br>
+      <button class="success" onclick="testLogin()">测试登录</button>
+    </div>
+    <div id="login-result"></div>
+  </div>
+
+  <div class="card">
+    <h2>📚 添加书架测试</h2>
+    <div>
+      <label class="label">图书ID:</label>
+      <input type="text" id="bookId" value="" placeholder="图书ID">
+      <button onclick="loadFirstBookId()">获取第一本书ID</button>
+      <br>
+      <button class="success" onclick="testAddBookshelf()">测试添加书架</button>
+      <a href="/view-book-ids.html" target="_blank" style="margin-left: 10px;">查看所有图书ID</a>
+    </div>
+    <div id="bookshelf-result"></div>
+  </div>
+
+  <div class="card">
+    <h2>🔍 完整流程测试</h2>
+    <button onclick="testFullFlow()">运行完整测试</button>
+    <div id="full-flow-result"></div>
+  </div>
+
+  <script>
+    // 检查当前状态
+    function checkStatus() {
+      const statusDiv = document.getElementById('current-status')
+      
+      const token = localStorage.getItem('authToken')
+      const user = localStorage.getItem('loggedInUser')
+      const authStorage = localStorage.getItem('auth-storage')
+      
+      let html = '<div class="info">'
+      
+      // Token
+      if (token) {
+        html += '<div><strong>✅ Token:</strong> 存在</div>'
+        html += `<pre>${token.substring(0, 50)}...</pre>`
+        
+        // 解析 Token
+        try {
+          const parts = token.split('.')
+          if (parts.length === 3) {
+            const payload = JSON.parse(atob(parts[1]))
+            html += '<div><strong>Token 内容:</strong></div>'
+            html += `<pre>${JSON.stringify(payload, null, 2)}</pre>`
+            
+            if (payload.exp) {
+              const expDate = new Date(payload.exp * 1000)
+              const now = new Date()
+              const isExpired = expDate < now
+              html += `<div><strong>过期时间:</strong> ${expDate.toLocaleString()}</div>`
+              html += `<div><strong>是否过期:</strong> ${isExpired ? '❌ 是' : '✅ 否'}</div>`
+            }
+          }
+        } catch (e) {
+          html += '<div class="error">❌ Token 格式错误</div>'
+        }
+      } else {
+        html += '<div><strong>❌ Token:</strong> 不存在</div>'
+      }
+      
+      // User
+      if (user) {
+        html += '<div style="margin-top: 10px;"><strong>✅ 用户信息:</strong> 存在</div>'
+        try {
+          const userData = JSON.parse(user)
+          html += `<pre>${JSON.stringify(userData, null, 2)}</pre>`
+        } catch (e) {
+          html += '<div class="error">❌ 用户信息格式错误</div>'
+        }
+      } else {
+        html += '<div style="margin-top: 10px;"><strong>❌ 用户信息:</strong> 不存在</div>'
+      }
+      
+      // Zustand
+      if (authStorage) {
+        html += '<div style="margin-top: 10px;"><strong>✅ Zustand 存储:</strong> 存在</div>'
+        try {
+          const storage = JSON.parse(authStorage)
+          html += `<pre>${JSON.stringify(storage, null, 2)}</pre>`
+        } catch (e) {
+          html += '<div class="error">❌ Zustand 存储格式错误</div>'
+        }
+      } else {
+        html += '<div style="margin-top: 10px;"><strong>❌ Zustand 存储:</strong> 不存在</div>'
+      }
+      
+      html += '</div>'
+      statusDiv.innerHTML = html
+    }
+
+    // 测试登录
+    async function testLogin() {
+      const resultDiv = document.getElementById('login-result')
+      const email = document.getElementById('email').value
+      const password = document.getElementById('password').value
+      
+      resultDiv.innerHTML = '<div class="info">⏳ 正在登录...</div>'
+      
+      try {
+        const response = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            email,
+            password,
+            loginMethod: 'password',
+          }),
+        })
+        
+        const data = await response.json()
+        
+        if (data.success && data.data && data.data.token) {
+          // 保存 Token
+          localStorage.setItem('authToken', data.data.token)
+          
+          // 保存用户信息
+          localStorage.setItem('loggedInUser', JSON.stringify(data.data.user))
+          
+          // 更新 Zustand（模拟）
+          const authStorage = {
+            state: {
+              user: data.data.user,
+              isAuthenticated: true,
+            },
+            version: 0,
+          }
+          localStorage.setItem('auth-storage', JSON.stringify(authStorage))
+          
+          resultDiv.innerHTML = `
+            <div class="success">
+              ✅ 登录成功！<br>
+              用户: ${data.data.user.name || data.data.user.email}<br>
+              Token 已保存到 localStorage
+            </div>
+            <pre>${JSON.stringify(data, null, 2)}</pre>
+          `
+          
+          // 刷新状态
+          checkStatus()
+        } else {
+          resultDiv.innerHTML = `
+            <div class="error">
+              ❌ 登录失败: ${data.message || '未知错误'}
+            </div>
+            <pre>${JSON.stringify(data, null, 2)}</pre>
+          `
+        }
+      } catch (error) {
+        resultDiv.innerHTML = `
+          <div class="error">
+            ❌ 请求失败: ${error.message}
+          </div>
+        `
+      }
+    }
+
+    // 测试添加书架
+    async function testAddBookshelf() {
+      const resultDiv = document.getElementById('bookshelf-result')
+      const bookId = document.getElementById('bookId').value
+      const token = localStorage.getItem('authToken')
+      
+      if (!token) {
+        resultDiv.innerHTML = '<div class="error">❌ 请先登录！</div>'
+        return
+      }
+      
+      resultDiv.innerHTML = '<div class="info">⏳ 正在添加到书架...</div>'
+      
+      try {
+        const response = await fetch('/api/bookshelf', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ bookId }),
+        })
+        
+        const data = await response.json()
+        
+        if (data.success) {
+          resultDiv.innerHTML = `
+            <div class="success">
+              ✅ 添加成功！
+            </div>
+            <pre>${JSON.stringify(data, null, 2)}</pre>
+          `
+        } else {
+          resultDiv.innerHTML = `
+            <div class="error">
+              ❌ 添加失败: ${data.message || '未知错误'}
+            </div>
+            <pre>${JSON.stringify(data, null, 2)}</pre>
+            <div style="margin-top: 10px;">
+              <strong>请求头:</strong>
+              <pre>Authorization: Bearer ${token.substring(0, 50)}...</pre>
+            </div>
+          `
+        }
+      } catch (error) {
+        resultDiv.innerHTML = `
+          <div class="error">
+            ❌ 请求失败: ${error.message}
+          </div>
+        `
+      }
+    }
+
+    // 完整流程测试
+    async function testFullFlow() {
+      const resultDiv = document.getElementById('full-flow-result')
+      resultDiv.innerHTML = '<div class="info">⏳ 开始完整流程测试...</div>'
+      
+      let log = ''
+      
+      // 步骤 1: 清除数据
+      log += '步骤 1: 清除所有数据\n'
+      localStorage.clear()
+      log += '✅ 已清除\n\n'
+      
+      // 步骤 2: 登录
+      log += '步骤 2: 登录\n'
+      try {
+        const loginResponse = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            email: document.getElementById('email').value,
+            password: document.getElementById('password').value,
+            loginMethod: 'password',
+          }),
+        })
+        
+        const loginData = await loginResponse.json()
+        
+        if (loginData.success && loginData.data && loginData.data.token) {
+          log += '✅ 登录成功\n'
+          log += `Token: ${loginData.data.token.substring(0, 30)}...\n\n`
+          
+          // 保存 Token
+          localStorage.setItem('authToken', loginData.data.token)
+          localStorage.setItem('loggedInUser', JSON.stringify(loginData.data.user))
+          
+          // 步骤 3: 添加书架
+          log += '步骤 3: 添加到书架\n'
+          const bookshelfResponse = await fetch('/api/bookshelf', {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${loginData.data.token}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ bookId: document.getElementById('bookId').value }),
+          })
+          
+          const bookshelfData = await bookshelfResponse.json()
+          
+          if (bookshelfData.success) {
+            log += '✅ 添加书架成功\n\n'
+            resultDiv.innerHTML = `
+              <div class="success">
+                🎉 完整流程测试成功！
+              </div>
+              <pre>${log}</pre>
+            `
+          } else {
+            log += `❌ 添加书架失败: ${bookshelfData.message}\n\n`
+            resultDiv.innerHTML = `
+              <div class="error">
+                ❌ 添加书架失败
+              </div>
+              <pre>${log}</pre>
+              <pre>${JSON.stringify(bookshelfData, null, 2)}</pre>
+            `
+          }
+        } else {
+          log += `❌ 登录失败: ${loginData.message}\n\n`
+          resultDiv.innerHTML = `
+            <div class="error">
+              ❌ 登录失败
+            </div>
+            <pre>${log}</pre>
+            <pre>${JSON.stringify(loginData, null, 2)}</pre>
+          `
+        }
+      } catch (error) {
+        log += `❌ 错误: ${error.message}\n\n`
+        resultDiv.innerHTML = `
+          <div class="error">
+            ❌ 测试失败
+          </div>
+          <pre>${log}</pre>
+        `
+      }
+      
+      // 刷新状态
+      checkStatus()
+    }
+
+    // 清除所有数据
+    function clearAll() {
+      if (confirm('确定要清除所有认证数据吗？')) {
+        localStorage.clear()
+        checkStatus()
+        alert('✅ 已清除所有数据')
+      }
+    }
+
+    // 获取第一本书的ID
+    async function loadFirstBookId() {
+      try {
+        const response = await fetch('/api/books')
+        const data = await response.json()
+
+        if (data.success && data.data && data.data.length > 0) {
+          const firstBook = data.data[0]
+          document.getElementById('bookId').value = firstBook.id
+          alert(`✅ 已获取第一本书的ID\n\n书名: ${firstBook.name}\nID: ${firstBook.id}`)
+        } else {
+          alert('❌ 没有找到图书数据')
+        }
+      } catch (error) {
+        alert(`❌ 获取失败: ${error.message}`)
+      }
+    }
+
+    // 页面加载时检查状态和获取第一本书ID
+    checkStatus()
+    loadFirstBookId()
+  </script>
+</body>
+</html>
+

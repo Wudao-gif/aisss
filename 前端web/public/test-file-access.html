@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>文件访问权限测试</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      max-width: 1200px;
+      margin: 50px auto;
+      padding: 20px;
+      background: #f5f5f5;
+    }
+    h1 { color: #333; }
+    .card {
+      background: white;
+      border-radius: 8px;
+      padding: 20px;
+      margin-bottom: 20px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 20px;
+    }
+    th, td {
+      padding: 12px;
+      text-align: left;
+      border-bottom: 1px solid #ddd;
+    }
+    th {
+      background: #f8f9fa;
+      font-weight: bold;
+      color: #333;
+    }
+    tr:hover {
+      background: #f8f9fa;
+    }
+    .badge {
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-size: 12px;
+      font-weight: 500;
+    }
+    .badge-success {
+      background: #d4edda;
+      color: #155724;
+    }
+    .badge-danger {
+      background: #f8d7da;
+      color: #721c24;
+    }
+    .badge-warning {
+      background: #fff3cd;
+      color: #856404;
+    }
+    button {
+      background: #007bff;
+      color: white;
+      border: none;
+      padding: 10px 20px;
+      border-radius: 4px;
+      cursor: pointer;
+      margin: 5px;
+    }
+    button:hover {
+      background: #0056b3;
+    }
+    button:disabled {
+      background: #ccc;
+      cursor: not-allowed;
+    }
+    .status {
+      padding: 10px;
+      border-radius: 4px;
+      margin: 10px 0;
+    }
+    .success { background: #d4edda; color: #155724; }
+    .error { background: #f8d7da; color: #721c24; }
+    .loading { background: #fff3cd; color: #856404; }
+  </style>
+</head>
+<body>
+  <h1>📚 文件访问权限测试</h1>
+
+  <div class="card">
+    <h2>📋 说明</h2>
+    <p>这个页面显示所有图书和资源的文件访问权限设置。</p>
+    <ul>
+      <li><strong>图书文件</strong>: 图书本身的PDF文件，由 <code>allowReading</code> 字段控制</li>
+      <li><strong>资源文件</strong>: 图书的附加资源（课件、习题等），每个资源有独立的 <code>allowReading</code> 字段</li>
+    </ul>
+    <button onclick="loadData()">刷新数据</button>
+  </div>
+
+  <div class="card">
+    <h2>📊 加载状态</h2>
+    <div id="status"></div>
+  </div>
+
+  <div class="card">
+    <h2>📖 图书文件访问权限</h2>
+    <div id="books-container"></div>
+  </div>
+
+  <div class="card">
+    <h2>📁 资源文件访问权限</h2>
+    <div id="resources-container"></div>
+  </div>
+
+  <script>
+    async function loadData() {
+      const statusDiv = document.getElementById('status')
+      const booksContainer = document.getElementById('books-container')
+      const resourcesContainer = document.getElementById('resources-container')
+
+      statusDiv.innerHTML = '<div class="status loading">⏳ 正在加载数据...</div>'
+      booksContainer.innerHTML = ''
+      resourcesContainer.innerHTML = ''
+
+      try {
+        // 加载图书数据
+        const booksResponse = await fetch('/api/books')
+        const booksData = await booksResponse.json()
+
+        if (!booksData.success) {
+          statusDiv.innerHTML = `<div class="status error">❌ 加载图书失败: ${booksData.message}</div>`
+          return
+        }
+
+        const books = booksData.data || []
+
+        // 显示图书表格
+        let booksHTML = `
+          <table>
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>书名</th>
+                <th>ISBN</th>
+                <th>文件URL</th>
+                <th>允许阅读</th>
+                <th>状态</th>
+              </tr>
+            </thead>
+            <tbody>
+        `
+
+        books.forEach((book, index) => {
+          const hasFile = book.fileUrl && book.fileUrl.trim() !== ''
+          const canRead = book.allowReading
+          
+          let statusBadge = ''
+          if (!hasFile) {
+            statusBadge = '<span class="badge badge-warning">无文件</span>'
+          } else if (canRead) {
+            statusBadge = '<span class="badge badge-success">可访问</span>'
+          } else {
+            statusBadge = '<span class="badge badge-danger">不可访问</span>'
+          }
+
+          booksHTML += `
+            <tr>
+              <td>${index + 1}</td>
+              <td><strong>${book.name}</strong></td>
+              <td>${book.isbn}</td>
+              <td>${hasFile ? `<code style="font-size: 11px;">${book.fileUrl.substring(0, 50)}...</code>` : '无'}</td>
+              <td>${canRead ? '✅ 是' : '❌ 否'}</td>
+              <td>${statusBadge}</td>
+            </tr>
+          `
+        })
+
+        booksHTML += `
+            </tbody>
+          </table>
+        `
+
+        booksContainer.innerHTML = booksHTML
+
+        // 统计
+        const withFile = books.filter(b => b.fileUrl && b.fileUrl.trim() !== '').length
+        const canReadCount = books.filter(b => b.allowReading).length
+        const accessibleCount = books.filter(b => b.fileUrl && b.fileUrl.trim() !== '' && b.allowReading).length
+
+        statusDiv.innerHTML = `
+          <div class="status success">
+            ✅ 成功加载 ${books.length} 本图书<br>
+            📊 统计: ${withFile} 本有文件 | ${canReadCount} 本允许阅读 | ${accessibleCount} 本可访问
+          </div>
+        `
+
+        // 加载资源数据（需要登录）
+        const token = localStorage.getItem('authToken')
+        if (!token) {
+          resourcesContainer.innerHTML = '<p class="status error">❌ 请先登录查看资源数据</p>'
+          return
+        }
+
+        // 获取所有图书的资源
+        let allResources = []
+        for (const book of books) {
+          try {
+            const resourcesResponse = await fetch(`/api/books/${book.id}/resources`, {
+              headers: {
+                'Authorization': `Bearer ${token}`,
+              },
+            })
+            const resourcesData = await resourcesResponse.json()
+            if (resourcesData.success && resourcesData.data) {
+              allResources = allResources.concat(
+                resourcesData.data.map(r => ({
+                  ...r,
+                  bookName: book.name,
+                }))
+              )
+            }
+          } catch (error) {
+            console.error(`获取图书 ${book.name} 的资源失败:`, error)
+          }
+        }
+
+        if (allResources.length === 0) {
+          resourcesContainer.innerHTML = '<p class="status error">❌ 没有找到资源数据</p>'
+          return
+        }
+
+        // 显示资源表格
+        let resourcesHTML = `
+          <table>
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>资源名称</th>
+                <th>所属图书</th>
+                <th>文件类型</th>
+                <th>文件大小</th>
+                <th>允许阅读</th>
+                <th>状态</th>
+              </tr>
+            </thead>
+            <tbody>
+        `
+
+        allResources.forEach((resource, index) => {
+          const canRead = resource.allowReading
+          const statusBadge = canRead 
+            ? '<span class="badge badge-success">可访问</span>'
+            : '<span class="badge badge-danger">不可访问</span>'
+
+          const fileSize = formatFileSize(resource.fileSize)
+
+          resourcesHTML += `
+            <tr>
+              <td>${index + 1}</td>
+              <td><strong>${resource.name}</strong></td>
+              <td>${resource.bookName}</td>
+              <td>${resource.fileType.toUpperCase()}</td>
+              <td>${fileSize}</td>
+              <td>${canRead ? '✅ 是' : '❌ 否'}</td>
+              <td>${statusBadge}</td>
+            </tr>
+          `
+        })
+
+        resourcesHTML += `
+            </tbody>
+          </table>
+        `
+
+        resourcesContainer.innerHTML = resourcesHTML
+
+        // 更新统计
+        const canReadResourcesCount = allResources.filter(r => r.allowReading).length
+        statusDiv.innerHTML += `<br>📁 资源: ${allResources.length} 个 | ${canReadResourcesCount} 个可访问`
+
+      } catch (error) {
+        statusDiv.innerHTML = `<div class="status error">❌ 请求失败: ${error.message}</div>`
+        console.error('加载数据失败:', error)
+      }
+    }
+
+    function formatFileSize(bytes) {
+      if (bytes < 1024) return bytes + ' B'
+      if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
+      return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
+    }
+
+    // 页面加载时自动加载数据
+    loadData()
+  </script>
+</body>
+</html>
+

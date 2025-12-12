@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>认证调试工具</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      max-width: 800px;
+      margin: 50px auto;
+      padding: 20px;
+      background: #f5f5f5;
+    }
+    .card {
+      background: white;
+      border-radius: 8px;
+      padding: 20px;
+      margin-bottom: 20px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    h1 {
+      color: #333;
+      margin-top: 0;
+    }
+    h2 {
+      color: #666;
+      font-size: 18px;
+      margin-top: 0;
+    }
+    .status {
+      padding: 10px;
+      border-radius: 4px;
+      margin: 10px 0;
+    }
+    .success {
+      background: #d4edda;
+      color: #155724;
+      border: 1px solid #c3e6cb;
+    }
+    .error {
+      background: #f8d7da;
+      color: #721c24;
+      border: 1px solid #f5c6cb;
+    }
+    .warning {
+      background: #fff3cd;
+      color: #856404;
+      border: 1px solid #ffeaa7;
+    }
+    button {
+      background: #007bff;
+      color: white;
+      border: none;
+      padding: 10px 20px;
+      border-radius: 4px;
+      cursor: pointer;
+      margin-right: 10px;
+      margin-bottom: 10px;
+    }
+    button:hover {
+      background: #0056b3;
+    }
+    button.danger {
+      background: #dc3545;
+    }
+    button.danger:hover {
+      background: #c82333;
+    }
+    pre {
+      background: #f8f9fa;
+      padding: 15px;
+      border-radius: 4px;
+      overflow-x: auto;
+      font-size: 12px;
+    }
+    .info-item {
+      margin: 10px 0;
+      padding: 10px;
+      background: #f8f9fa;
+      border-radius: 4px;
+    }
+    .info-label {
+      font-weight: bold;
+      color: #666;
+    }
+  </style>
+</head>
+<body>
+  <h1>🔍 认证调试工具</h1>
+
+  <div class="card">
+    <h2>📊 当前状态</h2>
+    <div id="status"></div>
+  </div>
+
+  <div class="card">
+    <h2>🔑 Token 信息</h2>
+    <div id="token-info"></div>
+  </div>
+
+  <div class="card">
+    <h2>👤 用户信息</h2>
+    <div id="user-info"></div>
+  </div>
+
+  <div class="card">
+    <h2>🧪 测试操作</h2>
+    <button onclick="testAddToBookshelf()">测试添加书架</button>
+    <button onclick="testGetResources()">测试获取资源</button>
+    <button onclick="refreshStatus()">刷新状态</button>
+    <button class="danger" onclick="clearAuth()">清除认证信息</button>
+    <div id="test-result" style="margin-top: 15px;"></div>
+  </div>
+
+  <div class="card">
+    <h2>📝 localStorage 内容</h2>
+    <pre id="localStorage-content"></pre>
+  </div>
+
+  <script>
+    function checkStatus() {
+      const token = localStorage.getItem('authToken')
+      const user = localStorage.getItem('loggedInUser')
+      const authStorage = localStorage.getItem('auth-storage')
+
+      let statusHtml = ''
+
+      // 检查 Token
+      if (token) {
+        statusHtml += '<div class="status success">✅ Token 存在</div>'
+      } else {
+        statusHtml += '<div class="status error">❌ Token 不存在</div>'
+      }
+
+      // 检查用户信息
+      if (user) {
+        statusHtml += '<div class="status success">✅ 用户信息存在</div>'
+      } else {
+        statusHtml += '<div class="status error">❌ 用户信息不存在</div>'
+      }
+
+      // 检查 Zustand 存储
+      if (authStorage) {
+        const authData = JSON.parse(authStorage)
+        if (authData.state && authData.state.isAuthenticated) {
+          statusHtml += '<div class="status success">✅ Zustand 认证状态: 已登录</div>'
+        } else {
+          statusHtml += '<div class="status warning">⚠️ Zustand 认证状态: 未登录</div>'
+        }
+      } else {
+        statusHtml += '<div class="status warning">⚠️ Zustand 存储不存在</div>'
+      }
+
+      document.getElementById('status').innerHTML = statusHtml
+
+      // 显示 Token 信息
+      let tokenHtml = ''
+      if (token) {
+        try {
+          const parts = token.split('.')
+          if (parts.length === 3) {
+            const payload = JSON.parse(atob(parts[1]))
+            tokenHtml += '<div class="info-item">'
+            tokenHtml += '<div class="info-label">Token 载荷:</div>'
+            tokenHtml += '<pre>' + JSON.stringify(payload, null, 2) + '</pre>'
+            
+            // 检查过期时间
+            if (payload.exp) {
+              const expDate = new Date(payload.exp * 1000)
+              const now = new Date()
+              const isExpired = expDate < now
+              
+              tokenHtml += '<div class="info-label">过期时间:</div>'
+              tokenHtml += '<div>' + expDate.toLocaleString() + '</div>'
+              
+              if (isExpired) {
+                tokenHtml += '<div class="status error">❌ Token 已过期</div>'
+              } else {
+                tokenHtml += '<div class="status success">✅ Token 有效</div>'
+              }
+            }
+            tokenHtml += '</div>'
+          }
+        } catch (e) {
+          tokenHtml += '<div class="status error">❌ Token 格式错误: ' + e.message + '</div>'
+        }
+      } else {
+        tokenHtml += '<div class="status warning">⚠️ 没有 Token</div>'
+      }
+      document.getElementById('token-info').innerHTML = tokenHtml
+
+      // 显示用户信息
+      let userHtml = ''
+      if (user) {
+        try {
+          const userData = JSON.parse(user)
+          userHtml += '<div class="info-item">'
+          userHtml += '<pre>' + JSON.stringify(userData, null, 2) + '</pre>'
+          userHtml += '</div>'
+        } catch (e) {
+          userHtml += '<div class="status error">❌ 用户信息格式错误</div>'
+        }
+      } else {
+        userHtml += '<div class="status warning">⚠️ 没有用户信息</div>'
+      }
+      document.getElementById('user-info').innerHTML = userHtml
+
+      // 显示所有 localStorage
+      const allStorage = {}
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i)
+        allStorage[key] = localStorage.getItem(key)
+      }
+      document.getElementById('localStorage-content').textContent = JSON.stringify(allStorage, null, 2)
+    }
+
+    async function testAddToBookshelf() {
+      const resultDiv = document.getElementById('test-result')
+      resultDiv.innerHTML = '<div class="status">测试中...</div>'
+
+      const token = localStorage.getItem('authToken')
+      if (!token) {
+        resultDiv.innerHTML = '<div class="status error">❌ 没有 Token，请先登录</div>'
+        return
+      }
+
+      try {
+        const response = await fetch('/api/bookshelf', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            bookId: 'test-book-id'
+          })
+        })
+
+        const data = await response.json()
+        
+        let html = '<div class="info-item">'
+        html += '<div class="info-label">响应状态: ' + response.status + '</div>'
+        html += '<div class="info-label">响应数据:</div>'
+        html += '<pre>' + JSON.stringify(data, null, 2) + '</pre>'
+        html += '</div>'
+
+        if (data.success) {
+          html = '<div class="status success">✅ 测试成功</div>' + html
+        } else {
+          html = '<div class="status error">❌ 测试失败: ' + data.message + '</div>' + html
+        }
+
+        resultDiv.innerHTML = html
+      } catch (error) {
+        resultDiv.innerHTML = '<div class="status error">❌ 请求失败: ' + error.message + '</div>'
+      }
+    }
+
+    async function testGetResources() {
+      const resultDiv = document.getElementById('test-result')
+      resultDiv.innerHTML = '<div class="status">测试中...</div>'
+
+      const token = localStorage.getItem('authToken')
+      if (!token) {
+        resultDiv.innerHTML = '<div class="status error">❌ 没有 Token，请先登录</div>'
+        return
+      }
+
+      try {
+        // 先获取一本书的ID
+        const booksResponse = await fetch('/api/books')
+        const booksData = await booksResponse.json()
+        
+        if (!booksData.success || !booksData.data || booksData.data.length === 0) {
+          resultDiv.innerHTML = '<div class="status error">❌ 没有图书数据</div>'
+          return
+        }
+
+        const bookId = booksData.data[0].id
+
+        const response = await fetch(`/api/books/${bookId}/resources`, {
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          }
+        })
+
+        const data = await response.json()
+        
+        let html = '<div class="info-item">'
+        html += '<div class="info-label">测试图书ID: ' + bookId + '</div>'
+        html += '<div class="info-label">响应状态: ' + response.status + '</div>'
+        html += '<div class="info-label">响应数据:</div>'
+        html += '<pre>' + JSON.stringify(data, null, 2) + '</pre>'
+        html += '</div>'
+
+        if (data.success) {
+          html = '<div class="status success">✅ 测试成功，找到 ' + (data.data?.length || 0) + ' 个资源</div>' + html
+        } else {
+          html = '<div class="status error">❌ 测试失败: ' + data.message + '</div>' + html
+        }
+
+        resultDiv.innerHTML = html
+      } catch (error) {
+        resultDiv.innerHTML = '<div class="status error">❌ 请求失败: ' + error.message + '</div>'
+      }
+    }
+
+    function refreshStatus() {
+      checkStatus()
+      document.getElementById('test-result').innerHTML = '<div class="status success">✅ 状态已刷新</div>'
+    }
+
+    function clearAuth() {
+      if (confirm('确定要清除所有认证信息吗？')) {
+        localStorage.removeItem('authToken')
+        localStorage.removeItem('loggedInUser')
+        localStorage.removeItem('auth-storage')
+        checkStatus()
+        document.getElementById('test-result').innerHTML = '<div class="status success">✅ 认证信息已清除</div>'
+      }
+    }
+
+    // 页面加载时检查状态
+    checkStatus()
+  </script>
+</body>
+</html>
+
