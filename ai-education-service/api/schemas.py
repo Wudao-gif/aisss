@@ -253,3 +253,37 @@ class ChatResponse(BaseModel):
         }
 
 
+# ==================== HITL 恢复相关 ====================
+
+class Decision(BaseModel):
+    """用户决策"""
+    type: str = Field(..., description="决策类型: approve, reject, edit")
+    edited_action: Optional[Dict[str, Any]] = Field(
+        None,
+        description="编辑后的操作（仅当 type=edit 时需要）"
+    )
+
+
+class ChatResumeRequest(BaseModel):
+    """HITL 恢复执行请求"""
+
+    thread_id: str = Field(
+        ...,
+        description="对话线程ID，用于恢复中断的执行"
+    )
+    decisions: List[Decision] = Field(
+        ...,
+        description="用户决策列表，必须与待审批操作一一对应"
+    )
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "thread_id": "user_123_book_456",
+                "decisions": [
+                    {"type": "approve"}
+                ]
+            }
+        }
+
+

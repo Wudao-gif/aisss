@@ -4,18 +4,23 @@
 
 使用 DashVector (jiyi Collection) + Qwen2.5-VL-Embedding
 支持 LangGraph Streaming 可观测性
+支持 Human-in-the-Loop (HITL) 中断（通过 interrupt() 函数）
 """
 
+import logging
 from typing import Optional, Literal
 
 from langchain_core.tools import tool
 from langgraph.config import get_stream_writer
+from langgraph.types import interrupt
 
 from modules.memory_store import (
     get_memory_store,
     MemoryType,
     LettaMemoryOutput,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _get_writer():
@@ -35,7 +40,7 @@ def memory_write(
     topic: Optional[str] = None,
 ) -> str:
     """
-    写入用户记忆到向量库
+    写入用户记忆到向量库（需要人工审批）
 
     Args:
         user_id: 用户ID
@@ -62,6 +67,45 @@ def memory_write(
             "icon": "save"
         })
 
+    # ==================== HITL 中断：请求人工审批 ====================
+    logger.info(f"🛑 [memory_write] 请求人工审批: {memory_text[:50]}...")
+
+    approval = interrupt({
+        "action": "memory_write",
+        "action_name": "保存学习记录",
+        "user_id": user_id,
+        "memory_type": memory_type,
+        "memory_text": memory_text,
+        "textbook_id": textbook_id,
+        "topic": topic,
+        "message": "需要审批保存的学习记录",
+        "description": f"将保存以下学习记录到您的个人记忆库：\n\n{memory_text}",
+    })
+
+    logger.info(f"✅ [memory_write] 收到审批结果: {approval}")
+
+    # 检查审批结果
+    if isinstance(approval, dict):
+        action = approval.get("action", "")
+        if action == "reject":
+            logger.info(f"❌ [memory_write] 用户拒绝保存")
+            if writer:
+                writer({
+                    "type": "progress",
+                    "step": "memory_write",
+                    "status": "cancelled",
+                    "message": "❌ 保存已取消",
+                    "icon": "cancel"
+                })
+            return "记忆保存已取消"
+        elif action == "edit":
+            # 使用编辑后的内容
+            edited_text = approval.get("edited_value", memory_text)
+            if edited_text:
+                memory_text = edited_text
+                logger.info(f"✏️ [memory_write] 使用编辑后的内容: {memory_text[:50]}...")
+
+    # ==================== 执行保存 ====================
     try:
         store = get_memory_store()
 
@@ -88,6 +132,7 @@ def memory_write(
                     "message": "✅ 学习记录已保存",
                     "icon": "check"
                 })
+            logger.info(f"✅ [memory_write] 记忆保存成功: {doc_id}")
             return f"记忆存储成功: {doc_id}"
         else:
             if writer:
@@ -98,6 +143,7 @@ def memory_write(
                     "message": "❌ 保存失败",
                     "icon": "error"
                 })
+            logger.error(f"❌ [memory_write] 记忆保存失败")
             return "记忆存储失败"
 
     except Exception as e:
@@ -109,6 +155,7 @@ def memory_write(
                 "message": f"❌ 保存失败: {str(e)}",
                 "icon": "error"
             })
+        logger.error(f"❌ [memory_write] 记忆写入异常: {str(e)}")
         return f"记忆写入失败: {str(e)}"
 
 

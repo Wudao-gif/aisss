@@ -10,6 +10,9 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import dynamic from 'next/dynamic'
 import { useAuthStore } from '@/stores/useAuthStore'
 import { useBookshelfStore } from '@/stores/useBookshelfStore'
+import { useHITL } from '@/hooks/useHITL'
+import { HITLApprovalModal } from '@/components/modals/HITLApprovalModal'
+import { Decision } from '@/lib/hitl-utils'
 import type { BookshelfResource } from '@/types'
 
 // 动态导入 ReactPDFViewer，禁用 SSR
@@ -28,6 +31,7 @@ const ReactPDFViewer = dynamic(
 // Lucide 图标
 import {
   ChevronDown,
+  Check,
   FileText,
   Clock,
   X,
@@ -63,19 +67,9 @@ import {
   Tooltip,
   Dropdown,
   Hotkey,
-  Accordion,
-  AccordionItem,
 } from '@lobehub/ui'
 
-// 步骤状态类型
-type StepStatus = 'pending' | 'running' | 'stopped' | 'success'
 
-// 本地 UI 组件（暂时保留，可能其他地方使用）
-// import {
-//   Collapsible,
-//   CollapsibleContent,
-//   CollapsibleTrigger,
-// } from '@/components/ui/collapsible'
 
 // LobeHub Icons
 import { ModelIcon } from '@lobehub/icons'
@@ -129,18 +123,6 @@ interface ResourceItem {
   isMainBook: boolean
   selected: boolean
   documentId?: string
-}
-
-// 思考步骤类型
-interface ThinkingStep {
-  id: string
-  step: string
-  message: string
-  detail?: string
-  status: 'pending' | 'running' | 'done'
-  timestamp: Date
-  parentStep?: string  // 父步骤类型
-  stepLevel: number    // 步骤层级（0=主步骤，1=子步骤）
 }
 
 // ==================== 工具函数 ====================
@@ -213,14 +195,17 @@ function BookChatV2Content() {
   const [historyConversations, setHistoryConversations] = useState<HistoryConversation[]>([])
   const [showHistoryModal, setShowHistoryModal] = useState(false)
   const [isLoadingHistory, setIsLoadingHistory] = useState(false)
-  const [progressMessage, setProgressMessage] = useState<string>('')  // AI思考进度
-  const [thinkingSteps, setThinkingSteps] = useState<ThinkingStep[]>([])  // 思考步骤列表
 
   // 引用来源状态
   const [clickedSource, setClickedSource] = useState<{source: Source, x: number, y: number} | null>(null)
 
   // 资源状态
   const [resources, setResources] = useState<ResourceItem[]>([])
+
+  // HITL 相关状态
+  const [hitlState, hitlActions] = useHITL()
+  const [currentThreadId, setCurrentThreadId] = useState<string | null>(null)
+  const [hitlLoading, setHitlLoading] = useState(false)
 
   // 初始化状态
   const [isInitialized, setIsInitialized] = useState(false)
@@ -426,7 +411,6 @@ function BookChatV2Content() {
     setMessages(prev => [...prev, userMessage])
     setInputValue('')
     setIsTyping(true)
-    setThinkingSteps([])  // 清空思考步骤
 
     const assistantMessageId = crypto.randomUUID()
     setMessages(prev => [...prev, {
@@ -488,6 +472,13 @@ function BookChatV2Content() {
         throw new Error(`请求失败: ${response.status}`)
       }
 
+      // 从响应头获取 thread_id（如果有）
+      const threadId = response.headers.get('X-Thread-ID')
+      if (threadId) {
+        setCurrentThreadId(threadId)
+        console.log('🔗 保存 thread_id:', threadId)
+      }
+
       const reader = response.body?.getReader()
       if (!reader) throw new Error('无法读取响应')
 
@@ -525,6 +516,26 @@ function BookChatV2Content() {
               const data = JSON.parse(dataStr)
             console.log('📦 解析数据:', { currentEvent, dataKeys: Object.keys(data) })
 
+              // 检查 HITL 中断（新格式：type: '__interrupt__'）
+              if (data.type === '__interrupt__' && data.data) {
+                console.log('🛑 检测到 HITL 中断，显示审批模态框')
+                // 转换为前端期望的格式
+                const interruptData = {
+                  __interrupt__: [{ value: data.data }]
+                }
+                if (hitlActions.handleInterrupt(interruptData)) {
+                  setIsTyping(false)
+                  return  // 停止处理，等待用户决策
+                }
+              }
+
+              // 检查旧格式的 HITL 中断（兼容性）
+              if (hitlActions.handleInterrupt(data)) {
+                console.log('🛑 检测到 HITL 中断（旧格式），显示审批模态框')
+                setIsTyping(false)
+                return  // 停止处理，等待用户决策
+              }
+
               // 根据 event 类型处理
               if (currentEvent === 'sources' && data.sources) {
                 const validSources = filterValidSources(data.sources)
@@ -532,74 +543,10 @@ function BookChatV2Content() {
                 pendingSources = validSources
               }
 
-              // 处理进度事件
-              if (currentEvent === 'progress' && data.message) {
-                console.log('⏳ 进度:', data.step, data.message, 'level:', data.step_level, 'parent:', data.parent_step)
-                console.log('📊 完整数据:', JSON.stringify(data, null, 2))
-                setProgressMessage(data.message)
 
-                // 只显示真实的处理步骤，不显示 STREAMING 类型的事件（LLM 流式输出）
-                if (data.step !== 'streaming') {
-                  // 添加或更新思考步骤
-                  setThinkingSteps(prev => {
-                    const stepId = data.step || `step-${prev.length}`
-                    const stepLevel = data.step_level ?? 0
-                    const parentStep = data.parent_step
-
-                    // 如果是主步骤（level=0），将之前的主步骤标记为完成
-                    if (stepLevel === 0) {
-                      const updated = prev.map(s => s.stepLevel === 0 ? { ...s, status: 'done' as const } : s)
-                      return [...updated, {
-                        id: crypto.randomUUID(),
-                        step: stepId,
-                        message: data.message,
-                        detail: data.detail,
-                        status: 'running' as const,
-                        timestamp: new Date(),
-                        parentStep: undefined,
-                        stepLevel: 0
-                      }]
-                    }
-
-                    // 如果是子步骤（level=1），添加到对应的主步骤下
-                    if (stepLevel === 1) {
-                      const updated = [...prev]
-                      // 找到对应的主步骤
-                      const parentIndex = updated.findIndex(s => s.step === parentStep && s.stepLevel === 0)
-
-                      if (parentIndex >= 0) {
-                        // 将同一主步骤下的其他子步骤标记为完成
-                        for (let i = parentIndex + 1; i < updated.length; i++) {
-                          if (updated[i].stepLevel === 1 && updated[i].parentStep === parentStep) {
-                            updated[i].status = 'done'
-                          } else if (updated[i].stepLevel === 0) {
-                            break
-                          }
-                        }
-                      }
-
-                      return [...updated, {
-                        id: crypto.randomUUID(),
-                        step: stepId,
-                        message: data.message,
-                        detail: data.detail,
-                        status: 'running' as const,
-                        timestamp: new Date(),
-                        parentStep: parentStep,
-                        stepLevel: 1
-                      }]
-                    }
-
-                    return prev
-                  })
-                }
-              }
 
               if (currentEvent === 'content' && data.content) {
                 console.log('💬 收到 content:', data.content)
-                // 收到内容后清除进度消息，将所有步骤标记为完成
-                setProgressMessage('')
-                setThinkingSteps(prev => prev.map(s => ({ ...s, status: 'done' as const })))
                 accumulatedContent += data.content
                 setMessages(prev => prev.map(msg =>
                   msg.id === assistantMessageId
@@ -609,8 +556,6 @@ function BookChatV2Content() {
               }
 
               if (currentEvent === 'done' || data.done) {
-                setProgressMessage('')  // 清除进度消息
-                setThinkingSteps(prev => prev.map(s => ({ ...s, status: 'done' as const })))  // 标记所有步骤完成
                 // 回答完成，现在显示 sources
                 console.log('✅ 回答完成，设置 sources:', pendingSources.length, '个, 累积内容长度:', accumulatedContent.length)
                 setMessages(prev => prev.map(msg =>
@@ -640,6 +585,9 @@ function BookChatV2Content() {
                       setCurrentConversationId(saveData.data.conversationId)
                     }
                     console.log('💾 对话已保存:', saveData.data.conversationId)
+
+                    // 注意：记忆管理现由 Deep Agent 的 memory_write 工具负责
+                    // Letta 已被移除，所有记忆操作通过后端 Deep Agent 处理
                   }
                 } catch (saveError) {
                   console.error('保存对话失败:', saveError)
@@ -666,6 +614,138 @@ function BookChatV2Content() {
       setIsTyping(false)
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
     }
+  }
+
+  // HITL 恢复执行
+  const resumeWithDecisions = async (decisions: Decision[]) => {
+    if (!currentThreadId) {
+      console.error('❌ 没有 thread_id')
+      return
+    }
+
+    setHitlLoading(true)
+    try {
+      const token = getToken()
+      const response = await fetch('/api/ai/chat/resume', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          thread_id: currentThreadId,
+          decisions: decisions
+        })
+      })
+
+      if (!response.ok) {
+        throw new Error(`恢复失败: ${response.status}`)
+      }
+
+      // 处理恢复后的响应流
+      const reader = response.body?.getReader()
+      if (!reader) throw new Error('无法读取响应')
+
+      const decoder = new TextDecoder()
+      let buffer = ''
+      let currentEvent = ''
+      let pendingSources: Source[] = []
+      let accumulatedContent = ''
+      const assistantMessageId = messages[messages.length - 1]?.id
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() || ''
+
+        for (const line of lines) {
+          if (line.startsWith('event:')) {
+            currentEvent = line.slice(6).trim()
+            continue
+          }
+
+          if (line.startsWith('data:')) {
+            const dataStr = line.slice(5).trim()
+            if (!dataStr) continue
+
+            try {
+              const data = JSON.parse(dataStr)
+
+              // 检查新格式的 HITL 中断
+              if (data.type === '__interrupt__' && data.data) {
+                console.log('🛑 恢复过程中又有新的中断')
+                const interruptData = {
+                  __interrupt__: [{ value: data.data }]
+                }
+                if (hitlActions.handleInterrupt(interruptData)) {
+                  return
+                }
+              }
+
+              // 检查旧格式的 HITL 中断（兼容性）
+              if (hitlActions.handleInterrupt(data)) {
+                console.log('🛑 又有新的中断')
+                return
+              }
+
+              if (currentEvent === 'sources' && data.sources) {
+                pendingSources = filterValidSources(data.sources)
+              }
+
+              if (currentEvent === 'content' && data.content) {
+                accumulatedContent += data.content
+                if (assistantMessageId) {
+                  setMessages(prev => prev.map(msg =>
+                    msg.id === assistantMessageId
+                      ? { ...msg, content: msg.content + data.content }
+                      : msg
+                  ))
+                }
+              }
+
+              if (currentEvent === 'done' || data.done) {
+                if (assistantMessageId) {
+                  setMessages(prev => prev.map(msg =>
+                    msg.id === assistantMessageId
+                      ? { ...msg, sources: pendingSources.length > 0 ? pendingSources : undefined }
+                      : msg
+                  ))
+                }
+                console.log('✅ 恢复执行完成')
+              }
+            } catch (e) {
+              console.warn('SSE 解析错误:', e)
+            }
+          }
+        }
+      }
+    } catch (error) {
+      console.error('❌ 恢复执行失败:', error)
+    } finally {
+      setHitlLoading(false)
+    }
+  }
+
+  // HITL 批准处理
+  const handleHITLApprove = async (decisions: Decision[]) => {
+    console.log('📤 提交 HITL 决策:', decisions)
+
+    // 验证决策
+    const result = hitlState.interruptInfo
+      ? hitlActions.submitDecisions()
+      : { valid: false }
+
+    if (!result.valid) {
+      console.error('❌ 决策验证失败:', result.error)
+      return
+    }
+
+    // 恢复执行
+    await resumeWithDecisions(decisions)
+    hitlActions.clearInterrupt()
   }
 
   const handleHistoryClick = () => {
@@ -772,142 +852,99 @@ function BookChatV2Content() {
 
   // ==================== 渲染内容处理 ====================
 
-  // 获取步骤状态标签配置
-  const getStepStatusTag = (status: StepStatus) => {
-    const statusConfig: Record<StepStatus, { label: string; color: string }> = {
-      pending: { label: '待执行', color: 'default' },
-      running: { label: '执行中', color: 'processing' },
-      stopped: { label: '执行终止', color: 'error' },
-      success: { label: '执行成功', color: 'success' },
-    }
-    return statusConfig[status]
-  }
-
   const renderContentWithCitations = (content: string, sources: Source[]) => {
-    const validSources = filterValidSources(sources)
+    // Markdown 组件的样式配置
+    const markdownStyle = {
+      h1: { fontSize: '1.875em', fontWeight: 700, marginTop: '0.5em', marginBottom: '0.5em' },
+      h2: { fontSize: '1.5em', fontWeight: 700, marginTop: '0.5em', marginBottom: '0.5em' },
+      h3: { fontSize: '1.25em', fontWeight: 600, marginTop: '0.5em', marginBottom: '0.5em' },
+      h4: { fontSize: '1.125em', fontWeight: 600, marginTop: '0.5em', marginBottom: '0.5em' },
+      h5: { fontSize: '1em', fontWeight: 600, marginTop: '0.5em', marginBottom: '0.5em' },
+      h6: { fontSize: '0.875em', fontWeight: 600, marginTop: '0.5em', marginBottom: '0.5em' },
+      p: { lineHeight: 1.6, marginTop: '0.5em', marginBottom: '0.5em' },
+      ul: { marginLeft: '20px', marginTop: '0.5em', marginBottom: '0.5em' },
+      ol: { marginLeft: '20px', marginTop: '0.5em', marginBottom: '0.5em' },
+      li: { marginTop: '0.25em', marginBottom: '0.25em' },
+      code: {
+        backgroundColor: '#f5f5f5',
+        padding: '2px 6px',
+        borderRadius: '4px',
+        fontFamily: 'monospace',
+        fontSize: '0.9em',
+      },
+      pre: {
+        backgroundColor: '#1e1e1e',
+        color: '#d4d4d4',
+        padding: '12px',
+        borderRadius: '6px',
+        overflow: 'auto',
+        fontSize: '0.875em',
+        lineHeight: 1.5,
+      },
+      blockquote: {
+        borderLeft: '4px solid #3b82f6',
+        paddingLeft: '12px',
+        color: '#6b7280',
+        fontStyle: 'italic',
+        marginLeft: 0,
+        marginRight: 0,
+        marginTop: '0.5em',
+        marginBottom: '0.5em',
+      },
+      table: {
+        borderCollapse: 'collapse',
+        width: '100%',
+        fontSize: '0.875em',
+        marginTop: '0.5em',
+        marginBottom: '0.5em',
+      },
+      th: {
+        backgroundColor: '#f9fafb',
+        fontWeight: 600,
+        border: '1px solid #e5e7eb',
+        padding: '8px 12px',
+        textAlign: 'left',
+      },
+      td: {
+        border: '1px solid #e5e7eb',
+        padding: '8px 12px',
+      },
+      a: {
+        color: '#3b82f6',
+        textDecoration: 'underline',
+        cursor: 'pointer',
+      },
+    }
 
-    // 增强的 Markdown 组件配置
-    const markdownComponent = (
-      <Markdown
-        // 启用代码块高亮和复制功能
-        style={{
-          // 代码块样式
-          code: {
-            backgroundColor: '#f5f5f5',
-            borderRadius: '6px',
-            padding: '2px 6px',
-            fontSize: 'clamp(0.75em, 2vw, 0.875em)',
-            fontFamily: 'monospace',
-          },
-          // 代码块容器 - 响应式处理
-          pre: {
-            backgroundColor: '#1e1e1e',
-            color: '#d4d4d4',
-            padding: 'clamp(8px, 2vw, 12px)',
-            borderRadius: '8px',
-            overflow: 'auto',
-            fontSize: 'clamp(0.75em, 2vw, 0.875em)',
-            lineHeight: '1.5',
-            marginTop: '8px',
-            marginBottom: '8px',
-            maxWidth: '100%',
-            wordBreak: 'break-word',
-            whiteSpace: 'pre-wrap',
-          },
-          // 表格样式 - 响应式处理
-          table: {
-            borderCollapse: 'collapse',
-            width: '100%',
-            marginTop: '8px',
-            marginBottom: '8px',
-            fontSize: 'clamp(0.75em, 2vw, 0.875em)',
-            overflowX: 'auto',
-            display: 'block',
-          },
-          // 表格单元格 - 响应式 padding
-          td: {
-            border: '1px solid #e5e7eb',
-            padding: 'clamp(4px, 1vw, 8px) clamp(6px, 1.5vw, 12px)',
-            textAlign: 'left',
-            wordBreak: 'break-word',
-          },
-          th: {
-            border: '1px solid #e5e7eb',
-            padding: 'clamp(4px, 1vw, 8px) clamp(6px, 1.5vw, 12px)',
-            backgroundColor: '#f9fafb',
-            fontWeight: '600',
-            textAlign: 'left',
-            wordBreak: 'break-word',
-          },
-          // 引用块样式
-          blockquote: {
-            borderLeft: '4px solid #3b82f6',
-            paddingLeft: '12px',
-            marginLeft: '0',
-            marginTop: '8px',
-            marginBottom: '8px',
-            color: '#6b7280',
-            fontStyle: 'italic',
-          },
-          // 链接样式
-          a: {
-            color: '#3b82f6',
-            textDecoration: 'underline',
-            cursor: 'pointer',
-            transition: 'color 0.2s',
-            wordBreak: 'break-word',
-          },
-          // 标题样式 - 响应式字体大小
-          h1: { fontSize: 'clamp(1.5em, 4vw, 1.875em)', fontWeight: '700', marginTop: '16px', marginBottom: '8px' },
-          h2: { fontSize: 'clamp(1.25em, 3.5vw, 1.5em)', fontWeight: '700', marginTop: '14px', marginBottom: '8px' },
-          h3: { fontSize: 'clamp(1.1em, 3vw, 1.25em)', fontWeight: '600', marginTop: '12px', marginBottom: '6px' },
-          // 列表样式 - 响应式 margin
-          ul: { marginLeft: 'clamp(12px, 3vw, 20px)', marginTop: '8px', marginBottom: '8px' },
-          ol: { marginLeft: 'clamp(12px, 3vw, 20px)', marginTop: '8px', marginBottom: '8px' },
-          li: { marginBottom: '4px' },
-          // 段落样式
-          p: { marginTop: '8px', marginBottom: '8px', lineHeight: '1.6', wordBreak: 'break-word' },
-        } as any}
-        // 配置链接组件以处理外部链接
-        componentProps={{
-          a: {
-            onClick: ((e: any, link: any) => {
-              const href = link?.href || (e.currentTarget as HTMLAnchorElement).href
-              if (href && href.startsWith('http')) {
-                e.preventDefault?.()
-                window.open(href, '_blank')
-              }
-            }) as any,
-          },
-        }}
-      >
+    const renderMarkdown = () => (
+      <Markdown style={markdownStyle}>
         {content}
       </Markdown>
     )
 
-    // 如果没有有效的来源，直接返回 Markdown
-    if (!validSources || validSources.length === 0) {
-      return markdownComponent
+    if (!sources || sources.length === 0) {
+      return renderMarkdown()
     }
 
-    // 返回 Markdown + 参考来源
+    const validSources = filterValidSources(sources)
+    if (validSources.length === 0) {
+      return renderMarkdown()
+    }
+
+    // 简单处理：在内容后添加引用标记
     return (
-      <div className="space-y-3">
-        {markdownComponent}
-        {/* 参考来源部分 */}
-        <div className="flex flex-wrap gap-2 mt-4 pt-3 border-t border-gray-200">
-          <span className="text-xs font-medium text-gray-600 w-full">📚 参考来源:</span>
+      <div>
+        {renderMarkdown()}
+        <div className="flex flex-wrap gap-1 mt-3 pt-3 border-t border-gray-100">
+          <span className="text-xs text-gray-500 mr-1">参考来源:</span>
           {validSources.slice(0, 5).map((source, index) => (
             <button
               key={source.id || index}
               onClick={(e) => handleCitationClick(source, e)}
-              className="inline-flex items-center px-2.5 py-1 text-xs font-medium bg-gradient-to-r from-blue-50 to-blue-100 text-blue-700 rounded-full hover:from-blue-100 hover:to-blue-200 transition-all duration-200 shadow-sm hover:shadow-md"
-              title={source.document_name || '来源'}
+              className="inline-flex items-center px-2 py-0.5 text-xs bg-blue-50 text-blue-600 rounded hover:bg-blue-100 transition-colors"
+              title={source.document_name || '参考来源'}
             >
-              <span className="inline-flex items-center justify-center w-4 h-4 mr-1 text-xs font-bold bg-blue-500 text-white rounded-full">
-                {index + 1}
-              </span>
-              {Math.round(source.score * 100)}%
+              [{index + 1}] {Math.round(source.score * 100)}%
             </button>
           ))}
         </div>
@@ -1011,18 +1048,18 @@ function BookChatV2Content() {
         />
 
         {/* 主内容区域 - 双栏布局 */}
-        <div className="flex-1 flex overflow-hidden relative flex-col lg:flex-row">
+        <div className="flex-1 flex overflow-hidden relative">
           {/* 左侧：可拖动预览面板 */}
           <DraggablePanel
             mode="fixed"
             placement="left"
-            defaultSize={{ width: 'clamp(300px, 50vw, 700px)' }}
-            minWidth={300}
+            defaultSize={{ width: 700 }}
+            minWidth={400}
             maxWidth={1200}
-            style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 'auto' }}
+            style={{ display: 'flex', flexDirection: 'column', height: '100%' }}
           >
               {/* 预览区域 */}
-            <div className="flex-1 overflow-hidden bg-gray-50 min-h-[200px] lg:min-h-0">
+            <div className="flex-1 overflow-hidden bg-gray-50">
               {canPreview && previewUrl ? (
                 // PDF 文件使用 ReactPDFViewer
                 currentPreviewResource?.type?.toLowerCase() === 'pdf' ? (
@@ -1040,9 +1077,9 @@ function BookChatV2Content() {
                 )
               ) : (
                 <div className="flex items-center justify-center h-full">
-                  <div className="text-center text-gray-500 px-4">
-                    <FileText className="w-12 h-12 sm:w-16 sm:h-16 mx-auto mb-2 sm:mb-4 opacity-30" />
-                <p className="text-xs sm:text-sm">{currentPreviewResource ? '该资源暂不支持预览' : '请选择一个资源进行预览'}</p>
+                  <div className="text-center text-gray-500">
+                    <FileText className="w-16 h-16 mx-auto mb-4 opacity-30" />
+                <p>{currentPreviewResource ? '该资源暂不支持预览' : '请选择一个资源进行预览'}</p>
                   </div>
                 </div>
               )}
@@ -1052,10 +1089,10 @@ function BookChatV2Content() {
           {/* 右侧：对话面板 */}
           <div className="flex-1 flex flex-col bg-white relative">
             {/* 消息列表 */}
-            <div className="flex-1 overflow-y-auto p-2 sm:p-3 md:p-4 space-y-3 sm:space-y-4">
+            <div className="flex-1 overflow-y-auto p-4 space-y-4">
               {messages.length === 0 ? (
                 <div className="pt-6 text-center">
-                  <p className="text-lg sm:text-xl md:text-2xl font-medium text-gray-800 px-2">
+                  <p className="text-2xl font-medium text-gray-800">
                     {(() => {
                       const hour = new Date().getHours()
                       if (hour >= 5 && hour < 12) return '早上好，'
@@ -1066,145 +1103,56 @@ function BookChatV2Content() {
                   </p>
                 </div>
               ) : (
-                messages.map((message, messageIndex) => (
+                messages.map((message) => (
                   <div
                     key={message.id}
-                    className={`flex gap-2 sm:gap-3 px-1 sm:px-0 ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
+                    className={`flex gap-3 ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
                   >
                     {message.role === 'assistant' && (
-                      <div className="flex-shrink-0 flex flex-col items-start gap-2">
-                        {/* AI 头像 */}
-                        <div className="mt-1 hidden sm:block">
-                          <ModelIcon
-                            model={selectedModel?.modelId || selectedProvider?.code || 'openai'}
-                            size={32}
-                            type="avatar"
-                          />
-                        </div>
+                      <div className="flex-shrink-0 mt-1">
+                        <ModelIcon
+                          model={selectedModel?.modelId || selectedProvider?.code || 'openai'}
+                          size={32}
+                          type="avatar"
+                        />
                       </div>
                     )}
-                    {/* 消息内容容器 */}
-                    <div className={`flex flex-col gap-2 ${message.role === 'user' ? 'items-end' : 'items-start'}`}>
-                      {/* 处理进度（在最后一条 AI 消息时显示，在内容上方） */}
-                      {message.role === 'assistant' && messageIndex === messages.length - 1 && thinkingSteps.length > 0 && (
-                        <div className="max-w-[90%] sm:max-w-[80%] md:max-w-[75%]">
-                          <div className="space-y-3">
-                            {thinkingSteps.map((step, index) => {
-                              // 只显示主步骤（level=0）
-                              if (step.stepLevel !== 0) return null
-
-                              // 获取该主步骤下的所有子步骤
-                              const childSteps = thinkingSteps.filter(s => s.parentStep === step.step && s.stepLevel === 1)
-
-                              // 根据步骤状态判断
-                              let status: StepStatus = 'pending'
-                              if (step.status === 'done') {
-                                status = 'success'
-                              } else if (step.status === 'running') {
-                                status = 'running'
-                              }
-                              const statusConfig = getStepStatusTag(status)
-
-                              // 获取主步骤的显示消息
-                              // 执行中显示主步骤的消息，执行成功显示最后一条子步骤的消息（结果）
-                              let mainMessage = step.message
-                              if (status === 'success' && childSteps.length > 0) {
-                                mainMessage = childSteps[childSteps.length - 1].message
-                              }
-
-                              return (
-                                <div key={step.id} className="border-l-2 border-gray-200 pl-3">
-                                  {/* 主步骤标题和状态 */}
-                                  <div className="flex items-start gap-2 mb-2">
-                                    <Tag
-                                      color={statusConfig.color}
-                                      size="small"
-                                      variant="outlined"
-                                      className="flex-shrink-0 mt-0.5"
-                                    >
-                                      {statusConfig.label}
-                                    </Tag>
-                                    <p className="text-xs font-medium text-gray-700">
-                                      {mainMessage}
-                                    </p>
-                                  </div>
-
-                                  {/* 子步骤 */}
-                                  {childSteps.length > 0 && status === 'running' && (
-                                    <div className="space-y-2 ml-2">
-                                      {childSteps.map((childStep, childIndex) => {
-                                        let childStatus: StepStatus = 'pending'
-                                        if (childStep.status === 'done') {
-                                          childStatus = 'success'
-                                        } else if (childStep.status === 'running') {
-                                          childStatus = 'running'
-                                        }
-                                        const childStatusConfig = getStepStatusTag(childStatus)
-
-                                        return (
-                                          <div key={childStep.id} className="flex items-start gap-2">
-                                            <Tag
-                                              color={childStatusConfig.color}
-                                              size="small"
-                                              variant="outlined"
-                                              className="flex-shrink-0 mt-0.5"
-                                            >
-                                              {childStatusConfig.label}
-                                            </Tag>
-                                            <div className="flex-1 min-w-0">
-                                              <p className="text-xs break-words text-gray-700">
-                                                {childIndex + 1}. {childStep.message}
-                                              </p>
-                                              {childStep.detail && (
-                                                <p className="text-xs text-gray-500 mt-1 break-words">
-                                                  {childStep.detail}
-                                                </p>
-                                              )}
-                                            </div>
-                                          </div>
-                                        )
-                                      })}
-                                    </div>
-                                  )}
-                                </div>
-                              )
-                            })}
-                          </div>
-                        </div>
-                      )}
-
                       {/* 消息内容 */}
-                      <div className={`max-w-[90%] sm:max-w-[80%] md:max-w-[75%] overflow-hidden ${message.role === 'user' ? 'bg-blue-500 text-white rounded-2xl px-3 sm:px-4 py-2' : ''}`}>
-                        {message.role === 'user' ? (
-                          <p className="text-xs sm:text-sm whitespace-normal break-words">{message.content}</p>
-                        ) : (
-                          <div className="overflow-x-auto">
-                            {renderContentWithCitations(message.content, message.sources || [])}
-                          </div>
-                        )}
-                      </div>
+                    <div className={`max-w-[80%] ${message.role === 'user' ? 'bg-blue-500 text-white rounded-2xl px-4 py-2' : ''}`}>
+                      {message.role === 'user' ? (
+                        <p className="text-sm whitespace-pre-wrap">{message.content}</p>
+                      ) : (
+                        renderContentWithCitations(message.content, message.sources || [])
+                      )}
                     </div>
                   </div>
                 ))
               )}
+              {/* 简单加载提示 */}
+              {isTyping && messages[messages.length - 1]?.content === '' && (
+                <span className="text-sm text-gray-600 animate-pulse">
+                  正在思考...
+                </span>
+              )}
+              <div ref={messagesEndRef} />
             </div>
 
-            {/* 输入区域 */}
+            {/* 杈撳叆鍖哄煙 */}
             <div
               className="bg-white"
               style={inputExpanded ? {
                 position: 'absolute',
-                bottom: 8,
-                left: 8,
-                right: 8,
+                bottom: 16,
+                left: 16,
+                right: 16,
                 top: 60,
                 zIndex: 10,
                 display: 'flex',
                 flexDirection: 'column',
                 borderRadius: 12,
                 boxShadow: '0 4px 24px rgba(0,0,0,0.15)',
-                padding: 12,
-              } : { padding: '12px' }}
+                padding: 16,
+              } : { padding: 16 }}
             >
               <div
                 className="relative group"
@@ -1236,16 +1184,15 @@ function BookChatV2Content() {
                   disabled={isTyping}
                   style={{
                     width: '100%',
-                    paddingRight: 100,
-                    minHeight: inputExpanded ? '100%' : 'clamp(60px, 15vw, 80px)',
+                    paddingRight: 140,
+                    minHeight: inputExpanded ? '100%' : 80,
                     height: inputExpanded ? '100%' : 'auto',
                     flex: inputExpanded ? 1 : 'none',
-                    fontSize: 'clamp(12px, 2vw, 14px)',
                   }}
                 />
-                <div style={{ position: 'absolute', right: 4, bottom: 4, display: 'flex', gap: 2, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                <div style={{ position: 'absolute', right: 8, bottom: 8, display: 'flex', gap: 4, alignItems: 'center' }}>
                   {(inputHovered || inputExpanded) && (
-                    <Tooltip title={inputExpanded ? "收起" : "展开"}>
+                    <Tooltip title={inputExpanded ? "鏀惰捣" : "灞曞紑"}>
                       <ActionIcon
                         icon={inputExpanded ? Minimize2 : Maximize2}
                         onClick={() => setInputExpanded(!inputExpanded)}
@@ -1427,6 +1374,15 @@ function BookChatV2Content() {
             </div>
           )}
         </Modal>
+
+        {/* HITL 审批模态框 */}
+        <HITLApprovalModal
+          isOpen={hitlState.isInterrupted}
+          actions={hitlState.formattedActions}
+          onApprove={handleHITLApprove}
+          onCancel={() => hitlActions.clearInterrupt()}
+          isLoading={hitlLoading}
+        />
       </div>
     </ThemeProvider>
   )

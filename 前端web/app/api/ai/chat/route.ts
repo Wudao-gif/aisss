@@ -190,11 +190,15 @@ export async function POST(request: NextRequest) {
       }
     })
 
+    // 生成 thread_id 用于 HITL 恢复
+    const threadId = `thread_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+
     return new Response(stream, {
       headers: {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
         'Connection': 'keep-alive',
+        'X-Thread-ID': threadId,  // 添加 thread_id 到响应头
       },
     })
   } catch (error) {

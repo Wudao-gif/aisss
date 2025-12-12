@@ -152,12 +152,14 @@ class KnowledgeGraphStore:
                     SET e += $properties
                     RETURN e.id as id
                     """,
-                    id=entity.id,
-                    name=entity.name,
-                    type=entity.type,
-                    book_id=entity.book_id,
-                    embedding=entity.embedding,
-                    properties=entity.properties or {}
+                    {
+                        "id": entity.id,
+                        "name": entity.name,
+                        "type": entity.type,
+                        "book_id": entity.book_id,
+                        "embedding": entity.embedding,
+                        "properties": entity.properties or {}
+                    }
                 )
             else:
                 result = await session.run(
@@ -167,11 +169,13 @@ class KnowledgeGraphStore:
                     SET e += $properties
                     RETURN e.id as id
                     """,
-                    id=entity.id,
-                    name=entity.name,
-                    type=entity.type,
-                    book_id=entity.book_id,
-                    properties=entity.properties or {}
+                    {
+                        "id": entity.id,
+                        "name": entity.name,
+                        "type": entity.type,
+                        "book_id": entity.book_id,
+                        "properties": entity.properties or {}
+                    }
                 )
             record = await result.single()
             return record["id"]
@@ -190,11 +194,13 @@ class KnowledgeGraphStore:
                 )
                 RETURN count(e) as count
                 """,
-                entities=[{
-                    "id": e.id, "name": e.name, "type": e.type,
-                    "book_id": e.book_id, "properties": e.properties or {},
-                    "embedding": e.embedding
-                } for e in entities]
+                {
+                    "entities": [{
+                        "id": e.id, "name": e.name, "type": e.type,
+                        "book_id": e.book_id, "properties": e.properties or {},
+                        "embedding": e.embedding
+                    } for e in entities]
+                }
             )
             record = await result.single()
             return record["count"]
@@ -204,7 +210,7 @@ class KnowledgeGraphStore:
         async with self.driver.session() as session:
             result = await session.run(
                 "MATCH (e:Entity {id: $id}) RETURN e",
-                id=entity_id
+                {"id": entity_id}
             )
             record = await result.single()
             return dict(record["e"]) if record else None
@@ -234,7 +240,7 @@ class KnowledgeGraphStore:
         cypher += " RETURN e LIMIT $limit"
 
         async with self.driver.session() as session:
-            result = await session.run(cypher, **params)
+            result = await session.run(cypher, params)
             records = await result.data()
             return [dict(r["e"]) for r in records]
 
@@ -267,10 +273,12 @@ class KnowledgeGraphStore:
                     RETURN node, score
                     ORDER BY score DESC
                     """,
-                    embedding=query_embedding,
-                    book_id=book_id,
-                    limit=limit * 2,  # 多查一些，因为要过滤
-                    min_score=min_score
+                    {
+                        "embedding": query_embedding,
+                        "book_id": book_id,
+                        "limit": limit * 2,  # 多查一些，因为要过滤
+                        "min_score": min_score
+                    }
                 )
             else:
                 result = await session.run(
@@ -281,9 +289,11 @@ class KnowledgeGraphStore:
                     RETURN node, score
                     ORDER BY score DESC
                     """,
-                    embedding=query_embedding,
-                    limit=limit,
-                    min_score=min_score
+                    {
+                        "embedding": query_embedding,
+                        "limit": limit,
+                        "min_score": min_score
+                    }
                 )
 
             records = await result.data()
@@ -327,7 +337,7 @@ class KnowledgeGraphStore:
                     RETURN e, r, related
                     LIMIT {expansion_depth * 5}
                     """,
-                    id=entity_id
+                    {"id": entity_id}
                 )
                 records = await result.data()
 
@@ -380,14 +390,16 @@ class KnowledgeGraphStore:
                     c.end_page = $end_page
                 RETURN c.id as id
                 """,
-                id=chapter.id,
-                book_id=chapter.book_id,
-                title=chapter.title,
-                order_index=chapter.order_index,
-                level=chapter.level,
-                parent_id=chapter.parent_id,
-                start_page=chapter.start_page,
-                end_page=chapter.end_page
+                {
+                    "id": chapter.id,
+                    "book_id": chapter.book_id,
+                    "title": chapter.title,
+                    "order_index": chapter.order_index,
+                    "level": chapter.level,
+                    "parent_id": chapter.parent_id,
+                    "start_page": chapter.start_page,
+                    "end_page": chapter.end_page
+                }
             )
             record = await result.single()
             return record["id"]
@@ -408,12 +420,14 @@ class KnowledgeGraphStore:
                     c.end_page = ch.end_page
                 RETURN count(c) as count
                 """,
-                chapters=[{
-                    "id": c.id, "book_id": c.book_id, "title": c.title,
-                    "order_index": c.order_index, "level": c.level,
-                    "parent_id": c.parent_id, "start_page": c.start_page,
-                    "end_page": c.end_page
-                } for c in chapters]
+                {
+                    "chapters": [{
+                        "id": c.id, "book_id": c.book_id, "title": c.title,
+                        "order_index": c.order_index, "level": c.level,
+                        "parent_id": c.parent_id, "start_page": c.start_page,
+                        "end_page": c.end_page
+                    } for c in chapters]
+                }
             )
             record = await result.single()
             return record["count"]
@@ -431,7 +445,7 @@ class KnowledgeGraphStore:
                 MERGE (b)-[:HAS_CHAPTER]->(c)
                 RETURN count(*) as count
                 """,
-                book_id=book_id
+                {"book_id": book_id}
             )
             record1 = await result1.single()
             chapter_count = record1["count"] if record1 else 0
@@ -446,7 +460,7 @@ class KnowledgeGraphStore:
                 MERGE (parent)-[:HAS_SECTION]->(child)
                 RETURN count(*) as count
                 """,
-                book_id=book_id
+                {"book_id": book_id}
             )
             record = await result.single()
             count = record["count"]
@@ -462,7 +476,7 @@ class KnowledgeGraphStore:
                 RETURN c
                 ORDER BY c.level, c.order_index
                 """,
-                book_id=book_id
+                {"book_id": book_id}
             )
             records = await result.data()
             return [dict(r["c"]) for r in records]
@@ -498,12 +512,14 @@ class KnowledgeGraphStore:
                     s.parent_id = $parent_id
                 RETURN s.id as id
                 """,
-                id=section.id,
-                resource_id=section.resource_id,
-                title=section.title,
-                order_index=section.order_index,
-                content_summary=section.content_summary,
-                parent_id=section.parent_id
+                {
+                    "id": section.id,
+                    "resource_id": section.resource_id,
+                    "title": section.title,
+                    "order_index": section.order_index,
+                    "content_summary": section.content_summary,
+                    "parent_id": section.parent_id
+                }
             )
             record = await result.single()
             return record["id"]
@@ -522,11 +538,13 @@ class KnowledgeGraphStore:
                     s.parent_id = sec.parent_id
                 RETURN count(s) as count
                 """,
-                sections=[{
-                    "id": s.id, "resource_id": s.resource_id, "title": s.title,
-                    "order_index": s.order_index, "content_summary": s.content_summary,
-                    "parent_id": s.parent_id
-                } for s in sections]
+                {
+                    "sections": [{
+                        "id": s.id, "resource_id": s.resource_id, "title": s.title,
+                        "order_index": s.order_index, "content_summary": s.content_summary,
+                        "parent_id": s.parent_id
+                    } for s in sections]
+                }
             )
             record = await result.single()
             return record["count"]
@@ -542,7 +560,7 @@ class KnowledgeGraphStore:
                 MERGE (r)-[:HAS_SECTION]->(s)
                 RETURN count(*) as count
                 """,
-                resource_id=resource_id
+                {"resource_id": resource_id}
             )
             record = await result.single()
             count = record["count"] if record else 0
@@ -560,7 +578,7 @@ class KnowledgeGraphStore:
                 SET rel.created_at = datetime()
                 RETURN count(rel) as count
                 """,
-                section_id=section_id, chapter_id=chapter_id
+                {"section_id": section_id, "chapter_id": chapter_id}
             )
             record = await result.single()
             return record["count"] > 0
@@ -579,7 +597,7 @@ class KnowledgeGraphStore:
                 SET rel.created_at = datetime()
                 RETURN count(rel) as count
                 """,
-                links=links
+                {"links": links}
             )
             record = await result.single()
             return record["count"]
@@ -593,7 +611,7 @@ class KnowledgeGraphStore:
                 RETURN s
                 ORDER BY s.order_index
                 """,
-                resource_id=resource_id
+                {"resource_id": resource_id}
             )
             records = await result.data()
             return [dict(r["s"]) for r in records]
@@ -611,10 +629,12 @@ class KnowledgeGraphStore:
                 SET r += $properties
                 RETURN count(r) as count
                 """,
-                source_id=relation.source_id,
-                target_id=relation.target_id,
-                type=relation.type,
-                properties=relation.properties or {}
+                {
+                    "source_id": relation.source_id,
+                    "target_id": relation.target_id,
+                    "type": relation.type,
+                    "properties": relation.properties or {}
+                }
             )
             record = await result.single()
             return record["count"] > 0
@@ -631,10 +651,12 @@ class KnowledgeGraphStore:
                 SET r += rel.properties
                 RETURN count(r) as count
                 """,
-                relations=[{
-                    "source_id": r.source_id, "target_id": r.target_id,
-                    "type": r.type, "properties": r.properties or {}
-                } for r in relations]
+                {
+                    "relations": [{
+                        "source_id": r.source_id, "target_id": r.target_id,
+                        "type": r.type, "properties": r.properties or {}
+                    } for r in relations]
+                }
             )
             record = await result.single()
             return record["count"]
@@ -659,7 +681,7 @@ class KnowledgeGraphStore:
         cypher += " RETURN e, r, other"
 
         async with self.driver.session() as session:
-            result = await session.run(cypher, **params)
+            result = await session.run(cypher, params)
             records = await result.data()
             return [{
                 "source": dict(r["e"]),
@@ -679,7 +701,7 @@ class KnowledgeGraphStore:
                 )
                 RETURN path
                 """,
-                start=start_id, end=end_id
+                {"start": start_id, "end": end_id}
             )
             records = await result.data()
             if not records:
@@ -705,7 +727,7 @@ class KnowledgeGraphStore:
                 YIELD nodes, relationships
                 RETURN nodes, relationships
                 """,
-                id=entity_id
+                {"id": entity_id}
             )
             record = await result.single()
             if not record:
@@ -783,7 +805,7 @@ class KnowledgeGraphStore:
 
     # ============ 资源关系操作 ============
 
-    async def add_book_resource_relation(self, book_id: str, resource_id: str, 
+    async def add_book_resource_relation(self, book_id: str, resource_id: str,
                                          book_name: str = None, resource_name: str = None) -> bool:
         """建立教材与学习资源的关系 (BOOK_HAS_RESOURCE)"""
         async with self.driver.session() as session:
@@ -794,9 +816,9 @@ class KnowledgeGraphStore:
                 SET b.name = COALESCE($book_name, b.name, $book_id)
                 SET b.type = 'Book'
                 """,
-                book_id=book_id, book_name=book_name
+                {"book_id": book_id, "book_name": book_name}
             )
-            
+
             # 确保 Resource 节点存在
             await session.run(
                 """
@@ -805,7 +827,7 @@ class KnowledgeGraphStore:
                 SET r.type = 'Resource'
                 SET r.book_id = $book_id
                 """,
-                resource_id=resource_id, resource_name=resource_name, book_id=book_id
+                {"resource_id": resource_id, "resource_name": resource_name, "book_id": book_id}
             )
             
             # 建立关系
@@ -817,7 +839,7 @@ class KnowledgeGraphStore:
                 SET rel.created_at = datetime()
                 RETURN count(rel) as count
                 """,
-                book_id=book_id, resource_id=resource_id
+                {"book_id": book_id, "resource_id": resource_id}
             )
             record = await result.single()
             success = record["count"] > 0
@@ -838,7 +860,7 @@ class KnowledgeGraphStore:
                     rel.created_at = datetime()
                 RETURN count(rel) as count
                 """,
-                resource_id=resource_id, chapter_id=chapter_id, rel_type=relation_type
+                {"resource_id": resource_id, "chapter_id": chapter_id, "rel_type": relation_type}
             )
             record = await result.single()
             return record["count"] > 0
@@ -857,7 +879,7 @@ class KnowledgeGraphStore:
                     rel.created_at = datetime()
                 RETURN count(rel) as count
                 """,
-                resource_id=resource_id, chapter_ids=chapter_ids, rel_type=relation_type
+                {"resource_id": resource_id, "chapter_ids": chapter_ids, "rel_type": relation_type}
             )
             record = await result.single()
             return record["count"]
@@ -870,7 +892,7 @@ class KnowledgeGraphStore:
                 MATCH (r:Resource)-[:RELATES_TO_CHAPTER]->(c:Chapter {id: $chapter_id})
                 RETURN r
                 """,
-                chapter_id=chapter_id
+                {"chapter_id": chapter_id}
             )
             records = await result.data()
             return [dict(r["r"]) for r in records]
@@ -884,7 +906,7 @@ class KnowledgeGraphStore:
                 RETURN c
                 ORDER BY c.level, c.order_index
                 """,
-                resource_id=resource_id
+                {"resource_id": resource_id}
             )
             records = await result.data()
             return [dict(r["c"]) for r in records]
@@ -898,7 +920,7 @@ class KnowledgeGraphStore:
                 WHERE NOT (r)-[:RELATES_TO_CHAPTER]->(:Chapter)
                 RETURN r
                 """,
-                book_id=book_id
+                {"book_id": book_id}
             )
             records = await result.data()
             return [dict(r["r"]) for r in records]
@@ -911,7 +933,7 @@ class KnowledgeGraphStore:
                 MATCH (b:Book {id: $book_id})-[:HAS_RESOURCE]->(r:Resource)
                 RETURN r
                 """,
-                book_id=book_id
+                {"book_id": book_id}
             )
             records = await result.data()
             return [dict(r["r"]) for r in records]
@@ -924,7 +946,7 @@ class KnowledgeGraphStore:
                 MATCH (r:Resource {id: $resource_id})-[rel:RELATES]->(e:Entity)
                 RETURN e, rel.type as relation_type
                 """,
-                resource_id=resource_id
+                {"resource_id": resource_id}
             )
             records = await result.data()
             return [{"entity": dict(r["e"]), "relation": r["relation_type"]} for r in records]
@@ -939,7 +961,7 @@ class KnowledgeGraphStore:
                 DETACH DELETE e
                 RETURN count(e) as count
                 """,
-                book_id=book_id
+                {"book_id": book_id}
             )
             record = await result.single()
             count = record["count"]

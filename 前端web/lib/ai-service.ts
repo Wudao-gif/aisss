@@ -33,7 +33,7 @@ export async function processDocument(
   ossKey: string,
   metadata?: Record<string, any>
 ): Promise<ProcessDocumentResponse> {
-  const response = await fetch(`${AI_SERVICE_URL}/api/process-document`, {
+  const response = await fetch(`${AI_SERVICE_URL}/api/v4/process-document`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -60,7 +60,7 @@ export async function processDocumentAsync(
   ossKey: string,
   metadata?: Record<string, any>
 ): Promise<ProcessDocumentResponse> {
-  const response = await fetch(`${AI_SERVICE_URL}/api/process-document/async`, {
+  const response = await fetch(`${AI_SERVICE_URL}/api/v4/process-document/async`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -84,7 +84,7 @@ export async function processDocumentAsync(
  */
 export async function checkAIServiceHealth(): Promise<boolean> {
   try {
-    const response = await fetch(`${AI_SERVICE_URL}/api/health`)
+    const response = await fetch(`${AI_SERVICE_URL}/api/v4/health`)
     return response.ok
   } catch {
     return false
@@ -136,7 +136,7 @@ export async function deleteDocumentVectors(bookId: string): Promise<boolean> {
   console.log('🗑️ [AI Service] 删除向量:', bookId)
 
   try {
-    const response = await fetch(`${AI_SERVICE_URL}/api/vectors/${bookId}`, {
+    const response = await fetch(`${AI_SERVICE_URL}/api/v4/vectors/${bookId}`, {
       method: 'DELETE',
       headers: {
         'X-API-Key': AI_SERVICE_API_KEY,

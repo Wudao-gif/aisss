@@ -24,6 +24,7 @@ from langgraph.store.base import BaseStore
 
 from config import settings
 from .tools import memory_read, memory_write
+from .retrieval_subagent import create_retrieval_subagent
 
 logger = logging.getLogger(__name__)
 
@@ -96,8 +97,21 @@ EDUCATION_SYSTEM_PROMPT = """你是一个专业的 AI 教育辅导助手，专�
   ```
 
 ### memory_write 工具
+- **当用户明确要求保存时，立即使用**（例如："保存我的笔记"、"记录学习进度"）
 - 在对话结束时使用
 - 保存用户的理解程度、学习进度
+- 参数：user_id、memory_text、memory_type（profile/understanding/learning_track）
+
+## 特殊情况处理
+
+### 用户要求保存笔记或记录学习进度时
+当用户说"保存我的笔记"、"记录学习进度"、"保存学习记录"等时：
+1. **立即调用 memory_write 工具**，不要询问或延迟
+2. 使用用户提供的内容作为 memory_text
+3. 根据内容选择合适的 memory_type：
+   - "learning_track" - 学习历史、进度、笔记
+   - "understanding" - 知识理解、掌握情况
+   - "profile" - 用户画像、学习风格
 
 ## 输出要求
 
@@ -107,6 +121,7 @@ EDUCATION_SYSTEM_PROMPT = """你是一个专业的 AI 教育辅导助手，专�
 - 对于数学公式使用 LaTeX 格式
 - **主动使用 write_todos 进行任务规划**
 - **先规划，后执行**
+- **当用户明确要求保存时，立即调用 memory_write，不要延迟**
 
 ## 当前上下文
 
@@ -159,43 +174,57 @@ def _get_model() -> ChatOpenAI:
 def get_deep_agent():
     """获取 Deep Agent 单例"""
     global _deep_agent
-    
+
     if _deep_agent is not None:
         return _deep_agent
-    
+
     logger.info("创建 Deep Agent...")
-    
+
     # 获取模型
     model = _get_model()
-    
+
     # 定义工具（主系统只用记忆工具，检索工具由子智能体使用）
     tools = [
         memory_read,
         memory_write,
     ]
 
-    # 子代理列表（后续逐个接入）
+    # 配置 Human-in-the-loop：根据风险等级定制审批策略
+    interrupt_on = {
+        # 高风险：修改用户学习记录，允许完全控制（批准、编辑、拒绝）
+        "memory_write": {
+            "allowed_decisions": ["approve", "edit", "reject"],
+            "description": "需要审批保存的学习记录"
+        },
+
+        # 低风险：读取信息，无需中断（自动执行）
+        "memory_read": False,
+    }
+
+    # 子代理列表（逐个接入）
     subagents: List[SubAgent] = [
-        # TODO: 接入 retrieval_expert
+        # ✅ 检索专家 - 从教材和知识图谱中检索信息
+        create_retrieval_subagent(),
         # TODO: 接入 reasoning_expert
         # TODO: 接入 generation_expert
         # TODO: 接入 expression_expert
         # TODO: 接入 quality_expert
     ]
-    
-    # 创建 Deep Agent
+
+    # 创建 Deep Agent（包含 Human-in-the-loop 支持）
     _deep_agent = create_deep_agent(
         model=model,
         tools=tools,
         system_prompt=EDUCATION_SYSTEM_PROMPT,
         subagents=subagents if subagents else None,
-        checkpointer=_checkpointer,
+        interrupt_on=interrupt_on,  # ✅ 添加 Human-in-the-loop 配置
+        checkpointer=_checkpointer,  # ✅ Checkpointer 是 HITL 必需的
         store=_store,
         debug=settings.DEBUG,
         name="education_agent",
     )
-    
-    logger.info("Deep Agent 创建完成")
+
+    logger.info("Deep Agent 创建完成（已启用 Human-in-the-loop）")
     return _deep_agent
 
 
@@ -341,17 +370,86 @@ async def run_deep_agent_stream(
     }
 
     try:
-        # 使用多模式流式输出
-        async for stream_mode, chunk in agent.astream(
+        # 使用多模式流式输出：同时获取 updates（节点状态）和 messages（LLM token）
+        # 这样可以获得完整的流式体验：进度 + 逐字输出
+        async for chunk in agent.astream(
             {"messages": messages},
             config,
-            stream_mode=["updates", "messages", "custom"]
+            stream_mode=["updates", "messages"]
         ):
-            if stream_mode == "updates":
-                # 节点状态更新
+            logger.debug(f"[Deep Agent Stream] chunk_type={type(chunk).__name__}")
+
+            # 处理不同的流模式输出
+            if isinstance(chunk, tuple) and len(chunk) >= 2:
+                # 多模式输出格式：(mode, data) 或 (namespace, mode, data)
+                if len(chunk) == 2:
+                    mode, data = chunk
+                else:
+                    # 有命名空间的情况
+                    mode, data = chunk[-2], chunk[-1]
+
+                logger.debug(f"[Deep Agent Stream] mode={mode}, data_type={type(data).__name__}")
+
+                # 处理 messages 模式（LLM token 流式输出）
+                if mode == "messages":
+                    # messages 模式返回 (message, metadata) 元组
+                    if isinstance(data, tuple) and len(data) >= 1:
+                        message = data[0]
+                        if hasattr(message, 'content') and message.content:
+                            yield {
+                                "event_type": "token",
+                                "content": message.content,
+                            }
+                    elif hasattr(data, 'content') and data.content:
+                        yield {
+                            "event_type": "token",
+                            "content": data.content,
+                        }
+
+                # 处理 updates 模式（节点状态更新）
+                elif mode == "updates" and isinstance(data, dict):
+                    for node_name, state in data.items():
+                        logger.debug(f"[Deep Agent Stream] node={node_name}, state_type={type(state).__name__}")
+
+                        if state is None:
+                            continue
+
+                        # 检查是否有中断（HITL）
+                        if isinstance(state, dict) and "__interrupt__" in state:
+                            logger.info(f"🛑 [Deep Agent] 检测到 HITL 中断")
+                            interrupt_data = state.get("__interrupt__", [])
+                            if interrupt_data:
+                                yield {
+                                    "event_type": "interrupt",
+                                    "interrupt": interrupt_data[0].value if hasattr(interrupt_data[0], 'value') else interrupt_data[0],
+                                }
+                            return  # 停止流式处理，等待用户决策
+
+                        # 发送节点进度
+                        yield {
+                            "event_type": "node",
+                            "node": node_name,
+                            "status": "update",
+                        }
+
+            # 处理单一模式输出（兼容性）
+            elif isinstance(chunk, dict):
                 for node_name, state in chunk.items():
+                    logger.debug(f"[Deep Agent Stream] node={node_name}, state_type={type(state).__name__}")
+
                     if state is None:
                         continue
+
+                    # 检查是否有中断（HITL）
+                    if isinstance(state, dict) and "__interrupt__" in state:
+                        logger.info(f"🛑 [Deep Agent] 检测到 HITL 中断")
+                        interrupt_data = state.get("__interrupt__", [])
+                        if interrupt_data:
+                            yield {
+                                "event_type": "interrupt",
+                                "interrupt": interrupt_data[0].value if hasattr(interrupt_data[0], 'value') else interrupt_data[0],
+                            }
+                        return  # 停止流式处理，等待用户决策
 
                     # 发送节点进度
                     yield {
@@ -359,52 +457,6 @@ async def run_deep_agent_stream(
                         "node": node_name,
                         "status": "update",
                     }
-
-                    # 提取最终回答（从 agent 节点）
-                    if node_name == "agent" and isinstance(state, dict):
-                        current_messages = state.get("messages", [])
-                        if hasattr(current_messages, 'value'):
-                            current_messages = current_messages.value
-                        if isinstance(current_messages, list) and current_messages:
-                            last_message = current_messages[-1]
-                            if hasattr(last_message, 'content') and last_message.content:
-                                yield {
-                                    "event_type": "answer",
-                                    "content": last_message.content,
-                                }
-
-            elif stream_mode == "messages":
-                # LLM token 流式输出
-                message_chunk, metadata = chunk
-                if hasattr(message_chunk, 'content') and message_chunk.content:
-                    yield {
-                        "event_type": "token",
-                        "content": message_chunk.content,
-                        "node": metadata.get("langgraph_node", ""),
-                    }
-
-            elif stream_mode == "custom":
-                # 自定义进度信息（来自工具）
-                # 将 progress_type 转换为 step
-                if hasattr(chunk, 'model_dump'):
-                    # Pydantic 模型 - 确保包含所有字段
-                    progress_data = chunk.model_dump(exclude_none=False)
-                elif isinstance(chunk, dict):
-                    progress_data = dict(chunk)
-                else:
-                    progress_data = chunk
-
-                logger.info(f"[Deep Agent] Custom event 原始数据: {progress_data}")
-
-                if "progress_type" in progress_data:
-                    progress_data["step"] = progress_data.pop("progress_type")
-
-                logger.info(f"[Deep Agent] Custom event 转换后: step={progress_data.get('step')}, message={progress_data.get('message')}, parent_step={progress_data.get('parent_step')}, step_level={progress_data.get('step_level')}")
-
-                yield {
-                    "event_type": "progress",
-                    **progress_data,
-                }
 
     except Exception as e:
         logger.error(f"Deep Agent 流式运行失败: {e}")

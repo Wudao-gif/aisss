@@ -20,6 +20,7 @@ from .schemas import (
     SearchResult,
     ChatRequest,
     ChatResponse,
+    ChatResumeRequest,
 )
 from .dependencies import verify_api_key
 from modules import ProcessingPipeline, RAGRetriever
@@ -404,6 +405,13 @@ async def chat_stream(
                     if content:
                         yield f"data: {json.dumps({'type': 'answer', 'data': content}, ensure_ascii=False)}\n\n"
 
+                elif event_type == "interrupt":
+                    # HITL 中断 - 需要用户审批
+                    logger.info("🛑 [API] 检测到 HITL 中断，转发给前端")
+                    interrupt_data = event.get("interrupt", {})
+                    yield f"data: {json.dumps({'type': '__interrupt__', 'data': interrupt_data}, ensure_ascii=False)}\n\n"
+                    # 不发送 done，等待前端恢复
+
                 elif event_type == "error":
                     # 错误
                     yield f"data: {json.dumps({'type': 'error', 'message': event.get('error', '未知错误')}, ensure_ascii=False)}\n\n"
@@ -414,6 +422,126 @@ async def chat_stream(
 
         except Exception as e:
             logger.error(f"[Deep Agent Stream] 错误: {e}")
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(
+        generate_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        }
+    )
+
+
+@router.post(
+    "/chat/resume",
+    summary="恢复 HITL 中断执行",
+    description="处理用户对 Human-in-the-Loop 中断的决策，恢复 Deep Agent 执行"
+)
+async def chat_resume(
+    request: ChatResumeRequest,
+    _: bool = Depends(verify_api_key)
+):
+    """
+    恢复 HITL 中断执行接口
+
+    当 Deep Agent 在执行敏感操作（如 memory_write）时，会中断并等待用户审批。
+    用户做出决策后，通过此接口恢复执行。
+
+    SSE 事件格式与 /chat/stream 相同：
+    - progress: 处理进度
+    - token: LLM token 流式输出
+    - answer: 完整回答
+    - error: 错误信息
+    - done: 完成标记
+    """
+    async def generate_stream():
+        try:
+            from langgraph.types import Command
+            from modules.langgraph import get_deep_agent
+            from modules.langgraph.hitl_handler import validate_decisions
+
+            logger.info(f"[HITL Resume] 恢复执行: thread_id={request.thread_id}, decisions={len(request.decisions)}")
+
+            agent = get_deep_agent()
+
+            # 构建配置（使用相同的 thread_id 以恢复状态）
+            config = {
+                "configurable": {
+                    "thread_id": request.thread_id,
+                }
+            }
+
+            # 转换决策格式
+            # 对于 memory_write 的 HITL，决策应该是一个字典，包含 action 和其他信息
+            decisions = []
+            for d in request.decisions:
+                decision = {
+                    "type": d.type,
+                }
+                if d.edited_action:
+                    decision["edited_action"] = d.edited_action
+                decisions.append(decision)
+
+            # 创建恢复命令
+            # 对于 memory_write 的中断，恢复值应该是 {"action": "approve"} 或 {"action": "reject"}
+            if len(decisions) == 1 and decisions[0].get("type") == "approve":
+                resume_value = {"action": "approve"}
+            elif len(decisions) == 1 and decisions[0].get("type") == "reject":
+                resume_value = {"action": "reject"}
+            elif len(decisions) == 1 and decisions[0].get("type") == "edit":
+                resume_value = {
+                    "action": "edit",
+                    "edited_action": decisions[0].get("edited_action")
+                }
+            else:
+                # 多个决策或其他情况
+                resume_value = {"decisions": decisions}
+
+            resume_command = Command(resume=resume_value)
+
+            logger.info(f"[HITL Resume] 创建恢复命令: {len(decisions)} 个决策")
+
+            # 发送开始事件
+            yield f"data: {json.dumps({'type': 'start', 'message': '🔄 恢复执行...'}, ensure_ascii=False)}\n\n"
+
+            # 使用 updates 模式流式输出恢复执行
+            async for chunk in agent.astream(
+                resume_command,
+                config,
+                stream_mode="updates"
+            ):
+                # 处理 updates 模式的输出
+                if isinstance(chunk, dict):
+                    for node_name, state in chunk.items():
+                        if state is None:
+                            continue
+
+                        # 检查是否有新的中断（不应该发生，但以防万一）
+                        if isinstance(state, dict) and "__interrupt__" in state:
+                            logger.warning(f"🛑 [HITL Resume] 恢复过程中又出现中断")
+                            interrupt_data = state.get("__interrupt__", [])
+                            if interrupt_data:
+                                yield f"data: {json.dumps({'type': '__interrupt__', 'data': interrupt_data[0].value if hasattr(interrupt_data[0], 'value') else interrupt_data[0]}, ensure_ascii=False)}\n\n"
+                            return
+
+                        # 提取最终回答（从 agent 节点）
+                        if node_name == "agent" and isinstance(state, dict):
+                            current_messages = state.get("messages", [])
+                            if hasattr(current_messages, 'value'):
+                                current_messages = current_messages.value
+                            if isinstance(current_messages, list) and current_messages:
+                                last_message = current_messages[-1]
+                                if hasattr(last_message, 'content') and last_message.content:
+                                    yield f"data: {json.dumps({'type': 'answer', 'data': last_message.content}, ensure_ascii=False)}\n\n"
+
+            # 完成
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+
+        except Exception as e:
+            logger.error(f"[HITL Resume] 恢复执行失败: {e}")
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(
