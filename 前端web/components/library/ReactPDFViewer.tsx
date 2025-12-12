@@ -562,7 +562,7 @@ export function ReactPDFViewer({
 
   return (
     <div className="h-full w-full overflow-hidden bg-gray-100">
-      <Worker workerUrl="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js">
+      <Worker workerUrl="/pdf.worker.min.js">
         <Viewer
           fileUrl={signedUrl}
           // 1. 默认缩放级别 - 适应页面宽度

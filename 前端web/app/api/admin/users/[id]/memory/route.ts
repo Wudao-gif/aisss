@@ -69,7 +69,7 @@ export async function GET(
         include: {
           book: { select: { id: true, name: true } },
         },
-        orderBy: { startTime: 'desc' },
+        orderBy: { createdAt: 'desc' },
         take: 100,
       }),
       // 4. 对话记录（按教材分组，包含消息）

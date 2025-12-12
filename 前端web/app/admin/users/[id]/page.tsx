@@ -63,7 +63,7 @@ interface Learning {
   userQuerySummary?: string
   aiResponseSummary?: string
   learningSummary?: string
-  startTime: string
+  createdAt: string
 }
 
 interface Message {
@@ -496,7 +496,7 @@ function LearningTab({ groups }: { groups: BookGroup<Learning>[] }) {
                           {r.dialogId && <span className="mr-2">对话ID: {r.dialogId.slice(0, 8)}...</span>}
                         </div>
                         <div className="text-xs text-gray-400">
-                          {new Date(r.startTime).toLocaleString('zh-CN')}
+                          {new Date(r.createdAt).toLocaleString('zh-CN')}
                         </div>
                       </div>
                       {/* 用户问题 */}

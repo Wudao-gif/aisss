@@ -158,3 +158,5 @@ class ProgressEvent(Event):
     message: str                                # 用户可见的进度消息
     detail: Optional[str] = None                # 详细信息（可选）
     extra_metadata: Optional[Dict[str, Any]] = None  # 额外元数据（避免与 Event 基类冲突）
+    parent_step: Optional[str] = None           # 父步骤类型（用于树形结构）
+    step_level: int = 0                         # 步骤层级（0=主步骤，1=子步骤）

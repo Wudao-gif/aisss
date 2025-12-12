@@ -1,0 +1,32 @@
+<component name="InspectionProjectProfileManager">
+  <profile version="1.0">
+    <option name="myName" value="Project Default" />
+    <inspection_tool class="PyPackageRequirementsInspection" enabled="true" level="WARNING" enabled_by_default="true">
+      <option name="ignoredPackages">
+        <list>
+          <option value="fastapi" />
+          <option value="uvicorn" />
+          <option value="pydantic" />
+          <option value="pydantic-settings" />
+          <option value="oss2" />
+          <option value="dashvector" />
+          <option value="dashscope" />
+          <option value="llama-index-core" />
+          <option value="llama-index-utils-workflow" />
+          <option value="llama-index-readers-file" />
+          <option value="llama-cloud-services" />
+          <option value="httpx" />
+          <option value="tenacity" />
+          <option value="pypdf" />
+          <option value="python-docx" />
+          <option value="python-pptx" />
+          <option value="docx2txt" />
+          <option value="rich" />
+          <option value="neo4j" />
+          <option value="langgraph" />
+          <option value="langchain-core" />
+        </list>
+      </option>
+    </inspection_tool>
+  </profile>
+</component>

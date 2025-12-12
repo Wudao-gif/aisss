@@ -55,9 +55,8 @@ export function PDFViewer({ fileUrl, fileName }: PDFViewerProps) {
     script.onload = () => {
       console.log('📄 [PDF] SDK 加载成功')
       if (window.pdfjsLib) {
-        // 配置 worker
-        window.pdfjsLib.GlobalWorkerOptions.workerSrc =
-          'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'
+        // 配置 worker - 使用本地 worker 文件
+        window.pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.js'
         setSdkLoaded(true)
       }
     }

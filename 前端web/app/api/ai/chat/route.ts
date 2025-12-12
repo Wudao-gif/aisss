@@ -160,12 +160,14 @@ export async function POST(request: NextRequest) {
                   console.log('✅ [AI Chat] 转发 done 事件')
                   controller.enqueue(encoder.encode(`event: done\ndata: ${JSON.stringify({ done: true })}\n\n`))
                 } else if (data.type === 'progress') {
-                  console.log('⏳ [AI Chat] 转发 progress:', data.step, data.message)
+                  console.log('⏳ [AI Chat] 转发 progress:', data.step, data.message, 'level:', data.step_level, 'parent:', data.parent_step)
                   const progressData = {
                     step: data.step,
                     message: data.message,
                     detail: data.detail || data.status,
-                    icon: data.icon
+                    icon: data.icon,
+                    step_level: data.step_level,
+                    parent_step: data.parent_step
                   }
                   controller.enqueue(encoder.encode(`event: progress\ndata: ${JSON.stringify(progressData)}\n\n`))
                 } else if (data.type === 'error') {

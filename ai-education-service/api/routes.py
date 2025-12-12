@@ -367,13 +367,6 @@ async def chat_stream(
             book_id = request.book_id or "default"
             thread_id = request.thread_id or f"{user_id}_{book_id}"
 
-            # 节点进度消息映射（友好名称）
-            node_messages = {
-                "agent": {"message": "🤔 正在思考...", "icon": "thinking"},
-                "tools": {"message": "🔧 正在使用工具...", "icon": "tool"},
-                "education_agent": {"message": "📖 正在处理...", "icon": "processing"},
-            }
-
             # 流式运行 Deep Agent
             async for event in run_deep_agent_stream(
                 query=request.question,
@@ -391,16 +384,12 @@ async def chat_stream(
                     yield f"data: {json.dumps({'type': 'start', 'message': event.get('message', '开始处理...')}, ensure_ascii=False)}\n\n"
 
                 elif event_type == "node":
-                    # 节点状态更新（过滤内部中间件节点）
-                    node = event.get("node", "")
-                    # 跳过内部中间件节点
-                    if "Middleware" in node or node.startswith("_"):
-                        continue
-                    node_info = node_messages.get(node, {"message": f"处理中: {node}", "icon": "processing"})
-                    yield f"data: {json.dumps({'type': 'progress', 'step': node, 'message': node_info['message'], 'icon': node_info['icon']}, ensure_ascii=False)}\n\n"
+                    # 节点状态更新 - 忽略，不发送虚假的进度消息
+                    # 只有当工具发送自定义进度时，才显示步骤
+                    pass
 
                 elif event_type == "progress":
-                    # 自定义进度（来自工具）
+                    # 自定义进度（来自工具的真实进度）
                     yield f"data: {json.dumps({'type': 'progress', 'step': event.get('step', ''), 'status': event.get('status', ''), 'message': event.get('message', ''), 'icon': event.get('icon', '')}, ensure_ascii=False)}\n\n"
 
                 elif event_type == "token":

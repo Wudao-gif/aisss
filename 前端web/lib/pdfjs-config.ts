@@ -6,9 +6,12 @@
 import { pdfjs } from 'react-pdf'
 
 // 配置 PDF.js worker
-// 使用 CDN 版本，无需下载到本地
+// 使用本地 node_modules 中的 worker，避免版本不匹配
 if (typeof window !== 'undefined') {
-  pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`
+  pdfjs.GlobalWorkerOptions.workerSrc = new URL(
+    'pdfjs-dist/build/pdf.worker.min.mjs',
+    import.meta.url,
+  ).toString()
 }
 
 export { pdfjs }

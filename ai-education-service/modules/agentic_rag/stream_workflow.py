@@ -101,23 +101,33 @@ class AgenticStreamWorkflow(Workflow):
         # 存储 book_name 供后续步骤使用
         await ctx.store.set("book_name", book_name)
 
-        # 构建进度消息
-        if book_name:
-            progress_msg = f"🎯 正在分析您关于《{book_name}》的问题..."
-        else:
-            progress_msg = "🤔 正在分析您的问题..."
+        # 发送主步骤：正在分析问题
+        ctx.write_event_to_stream(ProgressEvent(
+            progress_type=ProgressType.ROUTING,
+            message="正在分析问题",
+            step_level=0
+        ))
 
-        # 发送进度事件
+        # 子步骤 1.1：分析问题
+        if book_name:
+            progress_msg = f"正在分析您关于《{book_name}》的问题..."
+        else:
+            progress_msg = "正在分析您的问题..."
+
         ctx.write_event_to_stream(ProgressEvent(
             progress_type=ProgressType.ROUTING,
             message=progress_msg,
-            detail=f"问题: {query[:50]}..."
+            detail=f"问题: {query[:50]}...",
+            parent_step=ProgressType.ROUTING,
+            step_level=1
         ))
 
-        # ========== 使用 HyDE 进行查询转换 ==========
+        # 子步骤 1.2：优化查询
         ctx.write_event_to_stream(ProgressEvent(
             progress_type=ProgressType.ROUTING,
-            message="🔄 正在优化查询（HyDE）..."
+            message="正在优化查询（HyDE）...",
+            parent_step=ProgressType.ROUTING,
+            step_level=1
         ))
 
         try:
@@ -127,9 +137,12 @@ class AgenticStreamWorkflow(Workflow):
             hyde_queries = query_transformer.get_embedding_strings(hyde_result)
             await ctx.store.set("hyde_queries", hyde_queries)
 
+            # 子步骤 1.3：查询优化完成
             ctx.write_event_to_stream(ProgressEvent(
                 progress_type=ProgressType.ROUTING,
-                message=f"✅ 查询优化完成，生成 {len(hyde_queries)} 个检索向量"
+                message=f"查询优化完成，生成 {len(hyde_queries)} 个检索向量",
+                parent_step=ProgressType.ROUTING,
+                step_level=1
             ))
             logger.info(f"HyDE 转换: 原始查询 -> {len(hyde_queries)} 个检索字符串")
         except Exception as e:
@@ -149,12 +162,14 @@ class AgenticStreamWorkflow(Workflow):
 
             query_type = QueryType(parsed.get("type", "simple"))
 
-            # 发送路由结果
+            # 子步骤 1.4：问题分类完成
             type_names = {"simple": "简单问题", "complex": "复杂问题", "chitchat": "闲聊", "clarify": "需澄清"}
             ctx.write_event_to_stream(ProgressEvent(
                 progress_type=ProgressType.ROUTING,
-                message=f"📋 问题类型: {type_names.get(query_type.value, query_type.value)}",
-                detail=parsed.get("reasoning", "")
+                message=f"问题分类完成: {type_names.get(query_type.value, query_type.value)}",
+                detail=parsed.get("reasoning", ""),
+                parent_step=ProgressType.ROUTING,
+                step_level=1
             ))
 
             if query_type == QueryType.CHITCHAT:
@@ -193,7 +208,8 @@ class AgenticStreamWorkflow(Workflow):
             filter_expr, history = ev.filter_expr, ev.history
             ctx.write_event_to_stream(ProgressEvent(
                 progress_type=ProgressType.RETRYING,
-                message=f"🔄 第 {retry_count} 次重试: {ev.suggestions[:30]}..."
+                message=f"第 {retry_count} 次重试: {ev.suggestions[:30]}...",
+                step_level=0
             ))
             # 重试时重新获取 HyDE 查询
             hyde_queries = await ctx.store.get("hyde_queries", [query])
@@ -204,15 +220,24 @@ class AgenticStreamWorkflow(Workflow):
             hyde_queries = await ctx.store.get("hyde_queries", [query])
 
             if ev.query_type == QueryType.SIMPLE:
+                # 发送主步骤：正在检索相关资料
+                ctx.write_event_to_stream(ProgressEvent(
+                    progress_type=ProgressType.SEARCHING,
+                    message="正在检索相关资料",
+                    step_level=0
+                ))
+
                 # 获取 book_name 用于进度显示
                 book_name = await ctx.store.get("book_name", default=None)
                 if book_name:
-                    search_msg = f"🔍 正在查阅《{book_name}》相关资料（HyDE 优化）..."
+                    search_msg = f"正在查阅《{book_name}》相关资料（HyDE 优化）..."
                 else:
-                    search_msg = "🔍 正在检索相关资料（HyDE 优化）..."
+                    search_msg = "正在检索相关资料（HyDE 优化）..."
                 ctx.write_event_to_stream(ProgressEvent(
                     progress_type=ProgressType.SEARCHING,
-                    message=search_msg
+                    message=search_msg,
+                    parent_step=ProgressType.SEARCHING,
+                    step_level=1
                 ))
                 # 使用 HyDE 查询进行检索（使用第一个假设性文档）
                 search_query = hyde_queries[0] if hyde_queries else query
@@ -222,8 +247,19 @@ class AgenticStreamWorkflow(Workflow):
                     subtask_id="simple", history=history
                 )
 
+        # 发送主步骤：正在规划任务
         ctx.write_event_to_stream(ProgressEvent(
-            progress_type=ProgressType.PLANNING, message="📝 正在规划检索策略..."
+            progress_type=ProgressType.PLANNING,
+            message="正在规划任务",
+            step_level=0
+        ))
+
+        # 子步骤：规划检索策略
+        ctx.write_event_to_stream(ProgressEvent(
+            progress_type=ProgressType.PLANNING,
+            message="正在规划检索策略...",
+            parent_step=ProgressType.PLANNING,
+            step_level=1
         ))
 
         try:
@@ -240,9 +276,12 @@ class AgenticStreamWorkflow(Workflow):
                        tool_args={"query": t.get("query", query), "top_k": 5})
                 for i, t in enumerate(parsed.get("subtasks", [{"query": query}]))]
 
+            # 子步骤：规划完成
             ctx.write_event_to_stream(ProgressEvent(
                 progress_type=ProgressType.PLANNING,
-                message=f"📋 已规划 {len(subtasks)} 个任务"
+                message=f"已规划 {len(subtasks)} 个任务",
+                parent_step=ProgressType.PLANNING,
+                step_level=1
             ))
 
             plan = PlanEvent(query=query, subtasks=subtasks, reasoning="",
@@ -254,7 +293,9 @@ class AgenticStreamWorkflow(Workflow):
             first = subtasks[0]
             ctx.write_event_to_stream(ProgressEvent(
                 progress_type=ProgressType.SEARCHING,
-                message=f"🔍 执行任务 1/{len(subtasks)}: {first.description[:25]}..."
+                message=f"执行任务 1/{len(subtasks)}: {first.description[:25]}...",
+                parent_step=ProgressType.SEARCHING,
+                step_level=1
             ))
             return ToolCallEvent(query=query, tool_name=first.tool,
                 tool_args={**first.tool_args, "filter_expr": filter_expr},
@@ -282,7 +323,9 @@ class AgenticStreamWorkflow(Workflow):
 
             ctx.write_event_to_stream(ProgressEvent(
                 progress_type=ProgressType.SEARCHING,
-                message=f"✅ 找到 {result.get('count', 0)} 条内容"
+                message=f"找到 {result.get('count', 0)} 条内容",
+                parent_step=ProgressType.SEARCHING,
+                step_level=1
             ))
             return ToolResultEvent(query=ev.query, tool_name=ev.tool_name, tool_args=ev.tool_args,
                 result=result, success=result.get("success", True), subtask_id=ev.subtask_id,
@@ -309,20 +352,32 @@ class AgenticStreamWorkflow(Workflow):
                 next_task = plan.subtasks[idx + 1]
                 ctx.write_event_to_stream(ProgressEvent(
                     progress_type=ProgressType.SEARCHING,
-                    message=f"🔍 执行任务 {idx+2}/{len(plan.subtasks)}: {next_task.description[:25]}..."
+                    message=f"执行任务 {idx+2}/{len(plan.subtasks)}: {next_task.description[:25]}...",
+                    parent_step=ProgressType.SEARCHING,
+                    step_level=1
                 ))
                 return ToolCallEvent(query=ev.query, tool_name=next_task.tool,
                     tool_args={**next_task.tool_args, "filter_expr": plan.filter_expr},
                     subtask_id=next_task.id, plan=plan, history=ev.history)
 
-        # 反思评估
+        # 发送主步骤：正在评估结果
+        ctx.write_event_to_stream(ProgressEvent(
+            progress_type=ProgressType.REFLECTING,
+            message="正在评估结果",
+            step_level=0
+        ))
+
+        # 子步骤：评估检索结果
         book_name = await ctx.store.get("book_name", default=None)
         if book_name:
-            reflect_msg = f"🧐 正在评估《{book_name}》的检索结果..."
+            reflect_msg = f"正在评估《{book_name}》的检索结果..."
         else:
-            reflect_msg = "🧐 正在评估检索结果..."
+            reflect_msg = "正在评估检索结果..."
         ctx.write_event_to_stream(ProgressEvent(
-            progress_type=ProgressType.REFLECTING, message=reflect_msg
+            progress_type=ProgressType.REFLECTING,
+            message=reflect_msg,
+            parent_step=ProgressType.REFLECTING,
+            step_level=1
         ))
 
         context, sources = self._build_context(all_results)
@@ -333,7 +388,9 @@ class AgenticStreamWorkflow(Workflow):
             if eval_result["decision"] == "retry" and retry_count < MAX_RETRY:
                 ctx.write_event_to_stream(ProgressEvent(
                     progress_type=ProgressType.REFLECTING,
-                    message=f"⚠️ 结果不够充分，准备重试..."
+                    message=f"结果不够充分，准备重试...",
+                    parent_step=ProgressType.REFLECTING,
+                    step_level=1
                 ))
                 return RetryEvent(query=ev.query, reason=eval_result["reason"],
                     previous_results=all_results, suggestions=eval_result["suggestions"],
@@ -342,7 +399,9 @@ class AgenticStreamWorkflow(Workflow):
 
         ctx.write_event_to_stream(ProgressEvent(
             progress_type=ProgressType.REFLECTING,
-            message=f"✅ 找到 {len(sources)} 条相关资料，准备生成答案"
+            message=f"找到 {len(sources)} 条相关资料，准备生成答案",
+            parent_step=ProgressType.REFLECTING,
+            step_level=1
         ))
         return SynthesizeEvent(query=ev.query, results=all_results, context=context,
             sources=sources, history=ev.history)
@@ -373,18 +432,31 @@ class AgenticStreamWorkflow(Workflow):
     @step
     async def synthesize(self, ctx: Context, ev: SynthesizeEvent) -> StopEvent:
         """步骤5: 流式生成答案"""
+        # 发送主步骤：正在生成答案
+        ctx.write_event_to_stream(ProgressEvent(
+            progress_type=ProgressType.SYNTHESIZING,
+            message="正在生成答案",
+            step_level=0
+        ))
+
+        # 子步骤：生成答案
         book_name = await ctx.store.get("book_name", default=None)
         if book_name:
-            synth_msg = f"✨ 正在基于《{book_name}》生成答案..."
+            synth_msg = f"正在基于《{book_name}》生成答案..."
         else:
-            synth_msg = "✨ 正在生成答案..."
+            synth_msg = "正在生成答案..."
         ctx.write_event_to_stream(ProgressEvent(
-            progress_type=ProgressType.SYNTHESIZING, message=synth_msg
+            progress_type=ProgressType.SYNTHESIZING,
+            message=synth_msg,
+            parent_step=ProgressType.SYNTHESIZING,
+            step_level=1
         ))
 
         if not ev.context:
             ctx.write_event_to_stream(ProgressEvent(
-                progress_type=ProgressType.DONE, message="完成"
+                progress_type=ProgressType.DONE,
+                message="完成",
+                step_level=0
             ))
             return StopEvent(result={"answer": "抱歉，没有找到相关信息。", "sources": []})
 
@@ -410,7 +482,9 @@ class AgenticStreamWorkflow(Workflow):
         answer = "".join(answer_parts)
 
         ctx.write_event_to_stream(ProgressEvent(
-            progress_type=ProgressType.DONE, message="✅ 回答完成"
+            progress_type=ProgressType.DONE,
+            message="回答完成",
+            step_level=0
         ))
 
         return StopEvent(result={"answer": answer, "sources": ev.sources, "has_context": True})
